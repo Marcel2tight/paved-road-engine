@@ -1,10 +1,11 @@
 name: GCP Connection Test
+
 on: 
   workflow_dispatch:
 
-# Top-level environment variable to force the runner's hand
+# Suppress Node.js 20 deprecation warning
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
 
 permissions:
   id-token: write
@@ -13,6 +14,7 @@ permissions:
 jobs:
   test-oidc:
     runs-on: ubuntu-latest
+    
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -24,7 +26,19 @@ jobs:
           workload_identity_provider: 'projects/915035381641/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
           service_account: 'paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com'
 
-      - name: Verify Login
+      - name: Verify GCP Login
         run: |
+          echo "========================================="
+          echo "     GCP CONNECTION VERIFICATION"
+          echo "========================================="
+          echo ""
+          
+          echo "Ì≥ã Active Accounts:"
           gcloud auth list
+          
+          echo ""
+          echo "ÌøóÔ∏è  Project Details:"
           gcloud projects describe imposing-fx-413205
+          
+          echo ""
+          echo "‚úÖ GCP connection successful!"
