@@ -2,6 +2,10 @@ name: GCP Connection Test
 on: 
   workflow_dispatch:
 
+# Top-level environment variable to force the runner's hand
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 permissions:
   id-token: write
   contents: read
@@ -9,15 +13,13 @@ permissions:
 jobs:
   test-oidc:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4.2.2 # Explicitly using the latest patch
+        uses: actions/checkout@v4
 
       - name: Authenticate to Google Cloud
         id: auth
-        uses: google-github-actions/auth@v2.1.8 # Updated version for Node 24 support
+        uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: 'projects/915035381641/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
           service_account: 'paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com'
