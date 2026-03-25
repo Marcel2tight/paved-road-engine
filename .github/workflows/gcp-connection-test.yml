@@ -1,0 +1,27 @@
+name: GCP Connection Test
+on: 
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test-oidc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          # We will replace [PROJECT_NUMBER] in the next step
+          workload_identity_provider: 'projects/915035381641/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
+          service_account: 'paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com'
+
+      - name: Verify Login
+        run: |
+          gcloud auth list
+          gcloud projects describe imposing-fx-413205
