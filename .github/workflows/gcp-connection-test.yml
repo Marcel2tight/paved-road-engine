@@ -37,8 +37,6 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
         env:
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-        with:
-          version: '>= 500.0.0'
 
       - name: Verify gcloud auth
         run: |
@@ -46,32 +44,15 @@ jobs:
           echo "     GCP AUTHENTICATION VERIFICATION"
           echo "========================================="
           echo ""
-          
-          echo "í³‹ Active Accounts:"
+          echo "Active Accounts:"
           gcloud auth list
-          
           echo ""
-          echo "âš™ï¸  Current Configuration:"
+          echo "Current Configuration:"
           gcloud config list
-          
           echo ""
-          echo "í´‘ ADC Credentials File:"
-          echo "   Location: $GOOGLE_APPLICATION_CREDENTIALS"
-          ls -la "$GOOGLE_APPLICATION_CREDENTIALS" 2>/dev/null || echo "   (not set)"
-          
-          echo ""
-          echo "í¿—ï¸  Project Details:"
+          echo "Project Details:"
           gcloud projects describe imposing-fx-413205 --format="yaml(projectId, name, lifecycleState)"
-          
-          echo ""
-          echo "í³¦ Storage Buckets:"
-          gcloud storage ls --project=imposing-fx-413205 2>/dev/null || echo "No buckets found"
-          
-          echo ""
-          echo "í¼ VPC Networks:"
-          gcloud compute networks list --project=imposing-fx-413205 --format="table(name, subnetworksMode, mtu)" 2>/dev/null || echo "No networks found"
-          
           echo ""
           echo "========================================="
-          echo "     âœ… CONNECTION SUCCESSFUL"
+          echo "CONNECTION SUCCESSFUL"
           echo "========================================="
