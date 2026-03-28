@@ -1,8 +1,8 @@
 name: GCP Connection Test
-on: 
+
+on:
   workflow_dispatch:
 
-# Top-level environment variable to force the runner's hand
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
@@ -13,18 +13,65 @@ permissions:
 jobs:
   test-oidc:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+    
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
       - name: Authenticate to Google Cloud
         id: auth
         uses: google-github-actions/auth@v2
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
         with:
-          workload_identity_provider: 'projects/915035381641/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
-          service_account: 'paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com'
+          workload_identity_provider: projects/915035381641/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com
+          token_format: access_token
+          create_credentials_file: true
 
-      - name: Verify Login
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+        with:
+          version: '>= 500.0.0'
+
+      - name: Verify gcloud auth
         run: |
+          echo "========================================="
+          echo "     GCP AUTHENTICATION VERIFICATION"
+          echo "========================================="
+          echo ""
+          
+          echo "í³‹ Active Accounts:"
           gcloud auth list
-          gcloud projects describe imposing-fx-413205
+          
+          echo ""
+          echo "âš™ï¸  Current Configuration:"
+          gcloud config list
+          
+          echo ""
+          echo "í´‘ ADC Credentials File:"
+          echo "   Location: $GOOGLE_APPLICATION_CREDENTIALS"
+          ls -la "$GOOGLE_APPLICATION_CREDENTIALS" 2>/dev/null || echo "   (not set)"
+          
+          echo ""
+          echo "í¿—ï¸  Project Details:"
+          gcloud projects describe imposing-fx-413205 --format="yaml(projectId, name, lifecycleState)"
+          
+          echo ""
+          echo "í³¦ Storage Buckets:"
+          gcloud storage ls --project=imposing-fx-413205 2>/dev/null || echo "No buckets found"
+          
+          echo ""
+          echo "í¼ VPC Networks:"
+          gcloud compute networks list --project=imposing-fx-413205 --format="table(name, subnetworksMode, mtu)" 2>/dev/null || echo "No networks found"
+          
+          echo ""
+          echo "========================================="
+          echo "     âœ… CONNECTION SUCCESSFUL"
+          echo "========================================="
