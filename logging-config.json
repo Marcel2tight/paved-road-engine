@@ -1,0 +1,6 @@
+{
+  "logging": {
+    "logBucket": "marcel-tfstate-audit-logs",
+    "logObjectPrefix": "terraform-state-access"
+  }
+}

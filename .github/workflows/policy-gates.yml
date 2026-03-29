@@ -1,0 +1,21 @@
+name: Policy Gates
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1
