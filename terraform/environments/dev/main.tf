@@ -1,7 +1,7 @@
 module "cloud_run_service" {
-  source = "../../modules/cloud-run"
+  source = "./terraform/modules/cloud-run"
 
-  name   = "paved-road-dev-service"
+  name   = "local-test-service"
   image  = "us-docker.pkg.dev/cloudrun/container/hello"
   region = "us-central1"
 }

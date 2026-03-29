@@ -1,6 +1,6 @@
 terraform {
   backend "gcs" {
-    bucket = "marcel-paved-road-tfstate"
-    prefix = "terraform/environments/dev"
+    bucket  = "marcel-paved-road-tfstate"
+    prefix  = "terraform/state"
   }
 }
