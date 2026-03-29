@@ -3,56 +3,50 @@ name: GCP Connection Test
 on:
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-
 permissions:
   id-token: write
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   test-oidc:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-    
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
-      - name: Authenticate to Google Cloud
+      - name: Authenticate to Google Cloud (OIDC)
         id: auth
         uses: google-github-actions/auth@v2
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
         with:
           workload_identity_provider: projects/915035381641/locations/global/workloadIdentityPools/github-pool/providers/github-provider
           service_account: paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com
-          token_format: access_token
           create_credentials_file: true
 
       - name: Set up gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
-      - name: Verify gcloud auth
+      - name: Set Project
+        run: gcloud config set project imposing-fx-413205
+
+      - name: Verify Authentication (CRITICAL PROOF)
         run: |
           echo "========================================="
-          echo "     GCP AUTHENTICATION VERIFICATION"
+          echo "     OIDC AUTHENTICATION VERIFICATION"
           echo "========================================="
           echo ""
-          echo "Active Accounts:"
+          echo "Credentialed Accounts:"
           gcloud auth list
           echo ""
-          echo "Current Configuration:"
+          echo "Active Configuration:"
           gcloud config list
           echo ""
           echo "Project Details:"
           gcloud projects describe imposing-fx-413205 --format="yaml(projectId, name, lifecycleState)"
           echo ""
           echo "========================================="
-          echo "CONNECTION SUCCESSFUL"
+          echo "OIDC CONNECTION SUCCESSFUL"
           echo "========================================="
