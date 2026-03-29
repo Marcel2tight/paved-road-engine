@@ -2,10 +2,20 @@ name: Policy Gates
 
 on:
   pull_request:
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/policy-gates.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
-  security-scan:
+  policy-gates:
     runs-on: ubuntu-latest
 
     steps:
@@ -15,7 +25,13 @@ jobs:
       - name: Run Checkov
         uses: bridgecrewio/checkov-action@master
         with:
-          directory: .
+          directory: terraform
+          framework: terraform
+          config_file: terraform/policies/checkov.yaml
+          soft_fail: false
 
       - name: Run tfsec
-        uses: aquasecurity/tfsec-action@v1
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: terraform
+          soft_fail: false
