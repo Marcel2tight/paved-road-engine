@@ -1,14 +1,11 @@
 variable "name" {
-  description = "Cloud Run service name"
-  type        = string
+  type = string
 }
 
 variable "image" {
-  description = "Container image"
-  type        = string
+  type = string
 }
 
 variable "region" {
-  description = "Deployment region"
-  type        = string
+  type = string
 }
