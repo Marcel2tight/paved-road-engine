@@ -1,6 +1,0 @@
-terraform {
-  backend "gcs" {
-    bucket  = "marcel-paved-road-tfstate"
-    prefix  = "terraform/state"
-  }
-}
