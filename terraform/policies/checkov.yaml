@@ -1,0 +1,7 @@
+framework:
+  - terraform
+
+quiet: false
+compact: false
+soft_fail: false
+download_external_modules: true
