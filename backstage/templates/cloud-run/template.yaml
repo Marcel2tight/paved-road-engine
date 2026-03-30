@@ -1,0 +1,116 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: paved-road-cloud-run
+  title: Paved Road Cloud Run Service
+  description: Generate a Terraform-based Cloud Run service using the paved road platform
+spec:
+  owner: platform-team
+  type: service
+
+  parameters:
+    - title: Cloud Run Service Configuration
+      required:
+        - service_name
+        - region
+        - project_id
+        - image
+        - service_account_email
+        - environment
+      properties:
+        service_name:
+          type: string
+          title: Service Name
+          description: Name of the Cloud Run service
+        region:
+          type: string
+          title: Region
+          default: us-central1
+        project_id:
+          type: string
+          title: GCP Project ID
+          default: imposing-fx-413205
+        image:
+          type: string
+          title: Container Image
+          default: us-docker.pkg.dev/cloudrun/container/hello
+        service_account_email:
+          type: string
+          title: Service Account Email
+          default: paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com
+        environment:
+          type: string
+          title: Environment
+          enum:
+            - dev
+            - stage
+            - prod
+          default: dev
+        container_port:
+          type: number
+          title: Container Port
+          default: 8080
+        min_instance_count:
+          type: number
+          title: Minimum Instances
+          default: 0
+        max_instance_count:
+          type: number
+          title: Maximum Instances
+          default: 2
+        cpu:
+          type: string
+          title: CPU
+          default: "1"
+        memory:
+          type: string
+          title: Memory
+          default: "512Mi"
+        ingress:
+          type: string
+          title: Ingress
+          enum:
+            - INGRESS_TRAFFIC_INTERNAL_ONLY
+            - INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER
+            - INGRESS_TRAFFIC_ALL
+          default: INGRESS_TRAFFIC_INTERNAL_ONLY
+        allow_unauthenticated:
+          type: boolean
+          title: Allow Unauthenticated Access
+          default: false
+
+  steps:
+    - id: fetch-base
+      name: Generate Terraform Files
+      action: fetch:template
+      input:
+        url: ./skeleton
+        values:
+          service_name: ${{ parameters.service_name }}
+          region: ${{ parameters.region }}
+          project_id: ${{ parameters.project_id }}
+          image: ${{ parameters.image }}
+          service_account_email: ${{ parameters.service_account_email }}
+          environment: ${{ parameters.environment }}
+          container_port: ${{ parameters.container_port }}
+          min_instance_count: ${{ parameters.min_instance_count }}
+          max_instance_count: ${{ parameters.max_instance_count }}
+          cpu: ${{ parameters.cpu }}
+          memory: ${{ parameters.memory }}
+          ingress: ${{ parameters.ingress }}
+          allow_unauthenticated: ${{ parameters.allow_unauthenticated }}
+
+    - id: debug-output
+      name: Confirm Generation
+      action: debug:log
+      input:
+        message: |
+          Generated Terraform Cloud Run config for:
+          Service: ${{ parameters.service_name }}
+          Environment: ${{ parameters.environment }}
+          Region: ${{ parameters.region }}
+
+  output:
+    links:
+      - title: Platform Repository
+        url: https://github.com/Marcel2tight/paved-road-engine
