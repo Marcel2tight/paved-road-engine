@@ -1,0 +1,18 @@
+app:
+  title: Paved Road Developer Portal
+  baseUrl: http://localhost:3000
+
+organization:
+  name: Paved Road Engine
+
+backend:
+  baseUrl: http://localhost:7007
+  listen:
+    port: 7007
+
+techdocs:
+  builder: 'local'
+  generator:
+    runIn: 'docker'
+  publisher:
+    type: 'local'
