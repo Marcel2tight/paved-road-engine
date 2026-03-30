@@ -51,7 +51,7 @@ variable "memory" {
 variable "ingress" {
   description = "Ingress setting for Cloud Run"
   type        = string
-  default     = "INGRESS_TRAFFIC_ALL"
+  default     = "INGRESS_TRAFFIC_INTERNAL_ONLY"
 }
 
 variable "allow_unauthenticated" {

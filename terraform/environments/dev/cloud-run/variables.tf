@@ -56,7 +56,7 @@ variable "memory" {
 variable "ingress" {
   description = "Ingress policy"
   type        = string
-  default     = "INGRESS_TRAFFIC_ALL"
+  default     = "INGRESS_TRAFFIC_INTERNAL_ONLY"
 }
 
 variable "allow_unauthenticated" {
