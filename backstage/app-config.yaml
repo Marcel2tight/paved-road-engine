@@ -10,6 +10,11 @@ backend:
   listen:
     port: 7007
 
+integrations:
+  github:
+    - host: github.com
+      token: ${GITHUB_TOKEN}
+
 techdocs:
   builder: 'local'
   generator:
