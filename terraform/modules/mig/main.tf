@@ -18,7 +18,10 @@ resource "google_compute_instance_template" "this" {
     network    = var.network
     subnetwork = var.subnetwork
 
-    access_config {}
+    dynamic "access_config" {
+      for_each = var.assign_public_ip ? [1] : []
+      content {}
+    }
   }
 
   metadata_startup_script = var.startup_script
@@ -26,6 +29,12 @@ resource "google_compute_instance_template" "this" {
   service_account {
     email  = var.service_account_email
     scopes = var.service_account_scopes
+  }
+
+  shielded_instance_config {
+    enable_secure_boot          = var.enable_shielded_vm
+    enable_vtpm                 = var.enable_shielded_vm
+    enable_integrity_monitoring = var.enable_shielded_vm
   }
 }
 

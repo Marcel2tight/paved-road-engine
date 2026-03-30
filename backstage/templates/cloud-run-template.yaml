@@ -1,0 +1,53 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: cloud-run-service
+  title: Deploy Cloud Run Service
+  description: Create a new Cloud Run service using paved road templates
+spec:
+  owner: platform-team
+  type: service
+
+  parameters:
+    - title: Service Configuration
+      required:
+        - service_name
+        - region
+        - environment
+      properties:
+        service_name:
+          type: string
+          title: Service Name
+        region:
+          type: string
+          title: GCP Region
+          default: us-central1
+        environment:
+          type: string
+          title: Environment
+          enum:
+            - dev
+            - stage
+            - prod
+
+  steps:
+    - id: fetch-base
+      name: Fetch Base Template
+      action: fetch:template
+      input:
+        url: ./skeleton
+
+    - id: log-message
+      name: Log Parameters
+      action: debug:log
+      input:
+        message: |
+          Creating Cloud Run service:
+          Name: ${{ parameters.service_name }}
+          Region: ${{ parameters.region }}
+          Environment: ${{ parameters.environment }}
+
+  output:
+    links:
+      - title: Repository
+        url: https://github.com/Marcel2tight/paved-road-engine

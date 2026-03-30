@@ -26,6 +26,7 @@ module "mig_app" {
   disk_type              = var.disk_type
   network                = var.network
   subnetwork             = var.subnetwork
+  assign_public_ip       = var.assign_public_ip
   service_account_email  = var.service_account_email
   service_account_scopes = var.service_account_scopes
   startup_script         = var.startup_script
@@ -34,4 +35,5 @@ module "mig_app" {
   named_port             = var.named_port
   tags                   = var.tags
   labels                 = var.labels
+  enable_shielded_vm     = var.enable_shielded_vm
 }

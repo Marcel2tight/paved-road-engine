@@ -44,7 +44,10 @@ variable "service_account_email" {
 variable "oauth_scopes" {
   description = "OAuth scopes for GKE nodes"
   type        = list(string)
-  default     = ["https://www.googleapis.com/auth/cloud-platform"]
+  default     = [
+    "https://www.googleapis.com/auth/logging.write",
+    "https://www.googleapis.com/auth/monitoring"
+  ]
 }
 
 variable "tags" {
@@ -62,5 +65,35 @@ variable "labels" {
 variable "deletion_protection" {
   description = "Whether to enable deletion protection on the GKE cluster"
   type        = bool
+  default     = true
+}
+
+variable "enable_private_nodes" {
+  description = "Whether to enable private nodes"
+  type        = bool
+  default     = true
+}
+
+variable "enable_private_endpoint" {
+  description = "Whether to enable private endpoint"
+  type        = bool
   default     = false
+}
+
+variable "master_ipv4_cidr_block" {
+  description = "CIDR block for the GKE control plane"
+  type        = string
+  default     = "172.16.0.0/28"
+}
+
+variable "enable_shielded_nodes" {
+  description = "Whether to enable shielded nodes"
+  type        = bool
+  default     = true
+}
+
+variable "enable_network_policy" {
+  description = "Whether to enable network policy"
+  type        = bool
+  default     = true
 }
