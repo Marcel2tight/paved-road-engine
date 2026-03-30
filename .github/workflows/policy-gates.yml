@@ -1,57 +1,81 @@
 name: Policy Gates
 
 on:
-pull_request:
-paths:
-- 'terraform/**'
-- '.github/workflows/policy-gates.yml'
-workflow_dispatch:
+  pull_request:
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/policy-gates.yml'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
-contents: read
-pull-requests: read
-security-events: write
+  contents: read
+  pull-requests: read
+  security-events: write
 
 jobs:
-policy-gates:
-runs-on: ubuntu-latest
+  security-scan:
+    runs-on: ubuntu-latest
 
-steps:
-- name: Checkout
-uses: actions/checkout@v4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-- name: Set up Python
-uses: actions/setup-python@v5
-with:
-python-version: '3.12'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
-- name: Install Checkov
-run: |
-pip install checkov
+      - name: Install Checkov
+        run: |
+          python -m pip install --upgrade pip
+          pip install checkov
 
-- name: Run Checkov
-run: |
-mkdir -p reports
-checkov -d terraform \
---framework terraform \
---output sarif \
---output-file-path reports/checkov.sarif \
---quiet || true
+      - name: Run Checkov
+        run: |
+          mkdir -p reports
+          checkov -d terraform \
+            --framework terraform \
+            --config-file terraform/policies/checkov.yaml \
+            --output sarif \
+            --output-file-path reports/checkov.sarif || true
 
-- name: Install tfsec
-run: |
-curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+      - name: Install tfsec
+        run: |
+          curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
 
-- name: Run tfsec
-run: |
-mkdir -p reports
-tfsec terraform \
---format sarif \
---out reports/tfsec || true
+      - name: Run tfsec
+        run: |
+          mkdir -p reports
+          tfsec terraform \
+            --format sarif \
+            --out reports/tfsec.sarif || true
 
-- name: Enforce policy gate
-run: |
-if grep -q '"severity":"HIGH"' reports/*.sarif || grep -q '"severity":"CRITICAL"' reports/*.sarif; then
-echo "Blocking findings detected"
-exit 1
-fi
+      - name: Enforce Policy Gate
+        run: |
+          failed=0
+
+          if [ -f reports/checkov.sarif ]; then
+            if grep -q '"severity":"HIGH"' reports/checkov.sarif || \
+               grep -q '"severity":"CRITICAL"' reports/checkov.sarif || \
+               grep -q '"level":"error"' reports/checkov.sarif; then
+              echo "Blocking findings detected in Checkov"
+              failed=1
+            fi
+          fi
+
+          if [ -f reports/tfsec.sarif ]; then
+            if grep -q '"severity":"HIGH"' reports/tfsec.sarif || \
+               grep -q '"severity":"CRITICAL"' reports/tfsec.sarif || \
+               grep -q '"level":"error"' reports/tfsec.sarif; then
+              echo "Blocking findings detected in tfsec"
+              failed=1
+            fi
+          fi
+
+          if [ "$failed" -ne 0 ]; then
+            echo "Policy gate failed"
+            exit 1
+          fi
