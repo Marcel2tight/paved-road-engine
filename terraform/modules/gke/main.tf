@@ -10,6 +10,18 @@ resource "google_container_cluster" "this" {
   network    = var.network
   subnetwork = var.subnetwork
 
+  networking_mode = "VPC_NATIVE"
+
+  private_cluster_config {
+    enable_private_nodes    = var.enable_private_nodes
+    enable_private_endpoint = var.enable_private_endpoint
+    master_ipv4_cidr_block  = var.master_ipv4_cidr_block
+  }
+
+  network_policy {
+    enabled = var.enable_network_policy
+  }
+
   resource_labels = var.labels
 }
 
@@ -26,6 +38,14 @@ resource "google_container_node_pool" "this" {
     oauth_scopes    = var.oauth_scopes
     tags            = var.tags
     labels          = var.labels
+
+    dynamic "shielded_instance_config" {
+      for_each = var.enable_shielded_nodes ? [1] : []
+      content {
+        enable_secure_boot          = true
+        enable_integrity_monitoring = true
+      }
+    }
   }
 
   management {

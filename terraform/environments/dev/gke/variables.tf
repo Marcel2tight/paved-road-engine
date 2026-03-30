@@ -49,7 +49,10 @@ variable "service_account_email" {
 variable "oauth_scopes" {
   description = "OAuth scopes for nodes"
   type        = list(string)
-  default     = ["https://www.googleapis.com/auth/cloud-platform"]
+  default = [
+    "https://www.googleapis.com/auth/logging.write",
+    "https://www.googleapis.com/auth/monitoring"
+  ]
 }
 
 variable "tags" {
@@ -67,5 +70,35 @@ variable "labels" {
 variable "deletion_protection" {
   description = "Enable deletion protection"
   type        = bool
+  default     = true
+}
+
+variable "enable_private_nodes" {
+  description = "Enable private nodes"
+  type        = bool
+  default     = true
+}
+
+variable "enable_private_endpoint" {
+  description = "Enable private control plane endpoint"
+  type        = bool
   default     = false
+}
+
+variable "master_ipv4_cidr_block" {
+  description = "CIDR block for the control plane"
+  type        = string
+  default     = "172.16.0.0/28"
+}
+
+variable "enable_shielded_nodes" {
+  description = "Enable shielded nodes"
+  type        = bool
+  default     = true
+}
+
+variable "enable_network_policy" {
+  description = "Enable network policy"
+  type        = bool
+  default     = true
 }
