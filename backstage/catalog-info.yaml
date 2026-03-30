@@ -2,8 +2,18 @@ apiVersion: backstage.io/v1alpha1
 kind: Component
 metadata:
   name: paved-road-engine
-  description: Internal Developer Platform
+  description: Internal Developer Platform for secure, paved-road infrastructure delivery
 spec:
   type: service
+  owner: platform-team
+  lifecycle: experimental
+---
+apiVersion: backstage.io/v1alpha1
+kind: Template
+metadata:
+  name: paved-road-cloud-run
+  description: Backstage scaffolder template for generating Terraform-based Cloud Run services
+spec:
+  type: service-template
   owner: platform-team
   lifecycle: experimental
