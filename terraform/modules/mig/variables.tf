@@ -47,6 +47,12 @@ variable "subnetwork" {
   type        = string
 }
 
+variable "assign_public_ip" {
+  description = "Whether to assign a public IP to instances"
+  type        = bool
+  default     = false
+}
+
 variable "service_account_email" {
   description = "Service account email for VM instances"
   type        = string
@@ -55,7 +61,7 @@ variable "service_account_email" {
 variable "service_account_scopes" {
   description = "Scopes for the VM service account"
   type        = list(string)
-  default     = ["https://www.googleapis.com/auth/cloud-platform"]
+  default     = ["https://www.googleapis.com/auth/logging.write", "https://www.googleapis.com/auth/monitoring.write"]
 }
 
 variable "startup_script" {
@@ -92,4 +98,10 @@ variable "labels" {
   description = "Labels to apply to instances"
   type        = map(string)
   default     = {}
+}
+
+variable "enable_shielded_vm" {
+  description = "Whether to enable Shielded VM features"
+  type        = bool
+  default     = true
 }

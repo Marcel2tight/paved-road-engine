@@ -52,6 +52,12 @@ variable "subnetwork" {
   type        = string
 }
 
+variable "assign_public_ip" {
+  description = "Whether to assign public IPs"
+  type        = bool
+  default     = false
+}
+
 variable "service_account_email" {
   description = "Service account email"
   type        = string
@@ -60,7 +66,7 @@ variable "service_account_email" {
 variable "service_account_scopes" {
   description = "Service account scopes"
   type        = list(string)
-  default     = ["https://www.googleapis.com/auth/cloud-platform"]
+  default     = ["https://www.googleapis.com/auth/logging.write", "https://www.googleapis.com/auth/monitoring.write"]
 }
 
 variable "startup_script" {
@@ -97,4 +103,10 @@ variable "labels" {
   description = "Labels"
   type        = map(string)
   default     = {}
+}
+
+variable "enable_shielded_vm" {
+  description = "Enable Shielded VM features"
+  type        = bool
+  default     = true
 }
