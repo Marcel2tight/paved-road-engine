@@ -15,7 +15,7 @@ provider "google" {
 }
 
 module "cloud_run_app" {
-  source = "../../../modules/cloud-run"
+  source = "../../../terraform/modules/cloud-run"
 
   service_name          = var.service_name
   region                = var.region
