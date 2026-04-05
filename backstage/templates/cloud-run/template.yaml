@@ -2,82 +2,111 @@ apiVersion: scaffolder.backstage.io/v1beta3
 kind: Template
 metadata:
   name: paved-road-cloud-run
-  title: Paved Road Cloud Run Service
-  description: Generate a Terraform-based Cloud Run service using the paved road platform
+  title: Paved Road Cloud Run
+  description: Generate Cloud Run Terraform and open a PR in paved-road-engine
+
 spec:
   owner: platform-team
   type: service
 
   parameters:
-    - title: Cloud Run Service Configuration
+    - title: Cloud Run Service Settings
       required:
         - service_name
-        - region
         - project_id
+        - region
         - image
         - service_account_email
-        - environment
       properties:
         service_name:
-          type: string
           title: Service Name
+          type: string
           description: Name of the Cloud Run service
-        region:
-          type: string
-          title: Region
-          default: us-central1
+
         project_id:
-          type: string
           title: GCP Project ID
-          default: imposing-fx-413205
+          type: string
+          description: GCP project where the service will be deployed
+
+        region:
+          title: Region
+          type: string
+          default: us-central1
+
         image:
-          type: string
           title: Container Image
+          type: string
           default: us-docker.pkg.dev/cloudrun/container/hello
-        service_account_email:
-          type: string
-          title: Service Account Email
-          default: paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com
+
         environment:
-          type: string
           title: Environment
-          enum:
-            - dev
-            - stage
-            - prod
+          type: string
           default: dev
+
+        service_account_email:
+          title: Service Account Email
+          type: string
+          default: paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com
+
         container_port:
-          type: number
           title: Container Port
+          type: number
           default: 8080
+
         min_instance_count:
+          title: Min Instance Count
           type: number
-          title: Minimum Instances
           default: 0
+
         max_instance_count:
+          title: Max Instance Count
           type: number
-          title: Maximum Instances
           default: 2
+
         cpu:
-          type: string
           title: CPU
+          type: string
           default: "1"
+
         memory:
-          type: string
           title: Memory
-          default: "512Mi"
-        ingress:
           type: string
+          default: 512Mi
+
+        ingress:
           title: Ingress
+          type: string
+          default: INGRESS_TRAFFIC_INTERNAL_ONLY
           enum:
+            - INGRESS_TRAFFIC_ALL
             - INGRESS_TRAFFIC_INTERNAL_ONLY
             - INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER
-            - INGRESS_TRAFFIC_ALL
-          default: INGRESS_TRAFFIC_INTERNAL_ONLY
+
         allow_unauthenticated:
+          title: Allow Unauthenticated
           type: boolean
-          title: Allow Unauthenticated Access
           default: false
+
+    - title: Publishing Settings
+      required:
+        - repoUrl
+      properties:
+        repoUrl:
+          title: Repository Location
+          type: string
+          ui:field: RepoUrlPicker
+          ui:options:
+            allowedHosts:
+              - github.com
+            allowedOwners:
+              - Marcel2tight
+            allowedRepos:
+              - paved-road-engine
+            requestUserCredentials:
+              secretsKey: USER_OAUTH_TOKEN
+              additionalScopes:
+                github:
+                  - workflow
 
   steps:
     - id: fetch-base
@@ -85,13 +114,14 @@ spec:
       action: fetch:template
       input:
         url: ./skeleton
+        targetPath: ./terraform/environments/dev/cloud-run/${{ parameters.service_name }}
         values:
           service_name: ${{ parameters.service_name }}
-          region: ${{ parameters.region }}
           project_id: ${{ parameters.project_id }}
+          region: ${{ parameters.region }}
           image: ${{ parameters.image }}
-          service_account_email: ${{ parameters.service_account_email }}
           environment: ${{ parameters.environment }}
+          service_account_email: ${{ parameters.service_account_email }}
           container_port: ${{ parameters.container_port }}
           min_instance_count: ${{ parameters.min_instance_count }}
           max_instance_count: ${{ parameters.max_instance_count }}
@@ -100,17 +130,38 @@ spec:
           ingress: ${{ parameters.ingress }}
           allow_unauthenticated: ${{ parameters.allow_unauthenticated }}
 
-    - id: debug-output
-      name: Confirm Generation
-      action: debug:log
+    - id: create-pr
+      name: Create Pull Request
+      action: publish:github:pull-request
       input:
-        message: |
-          Generated Terraform Cloud Run config for:
-          Service: ${{ parameters.service_name }}
-          Environment: ${{ parameters.environment }}
+        repoUrl: ${{ parameters.repoUrl }}
+        branchName: backstage-cloud-run-${{ parameters.service_name }}
+        targetBranchName: main
+        title: "feat: add Cloud Run service ${{ parameters.service_name }}"
+        description: |
+          This PR was generated via Backstage.
+
+          Service Name: ${{ parameters.service_name }}
+          Project ID: ${{ parameters.project_id }}
           Region: ${{ parameters.region }}
+          Image: ${{ parameters.image }}
+          Environment: ${{ parameters.environment }}
+          Service Account: ${{ parameters.service_account_email }}
+          Container Port: ${{ parameters.container_port }}
+          Min Instances: ${{ parameters.min_instance_count }}
+          Max Instances: ${{ parameters.max_instance_count }}
+          CPU: ${{ parameters.cpu }}
+          Memory: ${{ parameters.memory }}
+          Ingress: ${{ parameters.ingress }}
+          Allow Unauthenticated: ${{ parameters.allow_unauthenticated }}
+
+          This follows the Paved Road Engine workflow.
+        commitMessage: "feat: add Cloud Run service ${{ parameters.service_name }}"
+        sourcePath: ./
+        update: true
+        token: ${{ secrets.USER_OAUTH_TOKEN }}
 
   output:
     links:
-      - title: Platform Repository
-        url: https://github.com/Marcel2tight/paved-road-engine
+      - title: Pull Request
+        url: ${{ steps['create-pr'].output.remoteUrl }}
