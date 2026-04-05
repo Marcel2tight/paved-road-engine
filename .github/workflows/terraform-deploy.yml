@@ -1,55 +1,49 @@
 name: Terraform Deploy
 
 on:
-  workflow_dispatch:
-
-permissions:
-  id-token: write
-  contents: read
+  push:
+    branches:
+      - main
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  PROJECT_ID: imposing-fx-413205
+  REGION: us-central1
   TF_WORKING_DIR: terraform/environments/dev/cloud-run
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  terraform:
+  terraform-deploy:
+    name: Deploy Infrastructure
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    permissions:
+      contents: read
+      id-token: write
 
-      - name: Authenticate to GCP
-        uses: google-github-actions/auth@v2
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.2.2
+
+      - name: Authenticate to GCP (OIDC)
+        uses: google-github-actions/auth@v2.1.8
         with:
           workload_identity_provider: projects/915035381641/locations/global/workloadIdentityPools/github-pool/providers/github-provider
           service_account: paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com
-          create_credentials_file: true
 
-      - name: Setup gcloud
+      - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Setup Terraform
+      - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
 
-      - name: Verify Auth
-        run: |
-          gcloud auth list
-          gcloud config list
-          gcloud projects describe imposing-fx-413205 --format="yaml(projectId,name,lifecycleState)"
-
       - name: Terraform Init
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} init
 
       - name: Terraform Validate
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform validate
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} validate
 
       - name: Terraform Plan
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform plan
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} plan
 
       - name: Terraform Apply
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform apply -auto-approve
+        run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -auto-approve
