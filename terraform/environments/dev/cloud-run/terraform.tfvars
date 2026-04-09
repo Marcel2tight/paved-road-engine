@@ -22,4 +22,6 @@ labels = {
   managed_by  = "backstage"
   platform    = "paved-road-engine"
   security    = "hardened"
+  service     = "paved-road-engine"
+  owner       = "platform-team"
 }
