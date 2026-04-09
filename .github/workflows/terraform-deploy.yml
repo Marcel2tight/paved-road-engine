@@ -47,3 +47,11 @@ jobs:
 
       - name: Terraform Apply
         run: terraform -chdir=${{ env.TF_WORKING_DIR }} apply -auto-approve
+
+      - name: Verify Cloud Run Deployment
+        run: |
+          gcloud run services describe $SERVICE_NAME \
+            --region=us-central1 \
+            --project=imposing-fx-413205 \
+            --format="value(status.url)"
+
