@@ -1,6 +1,6 @@
 project_id            = "imposing-fx-413205"
 region                = "us-central1"
-service_name          = "Paved-road-engine"
+service_name          = "paved-road-stage-app"
 image                 = "us-docker.pkg.dev/cloudrun/container/hello"
 service_account_email = "paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com"
 
@@ -13,13 +13,15 @@ ingress               = "INGRESS_TRAFFIC_INTERNAL_ONLY"
 allow_unauthenticated = false
 
 env_vars = {
-  ENVIRONMENT = "dev"
+  ENVIRONMENT = "stage"
   PLATFORM    = "paved-road-engine"
 }
 
 labels = {
-  environment = "dev"
-  managed_by  = "backstage"
+  environment = "stage"
+  managed_by  = "terraform"
   platform    = "paved-road-engine"
   security    = "hardened"
+  service     = "paved-road-engine"
+  owner       = "platform-team"
 }
