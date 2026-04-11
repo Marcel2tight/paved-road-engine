@@ -8,6 +8,7 @@ on:
 env:
   PROJECT_ID: imposing-fx-413205
   REGION: us-central1
+  SERVICE_NAME: backstage-acceptance-test 
   TF_WORKING_DIR: terraform/environments/dev/cloud-run
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
