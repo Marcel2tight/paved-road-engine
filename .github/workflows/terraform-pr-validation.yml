@@ -39,7 +39,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: detect-changes
     if: needs.detect-changes.outputs.dev_cloud_run == 'true'
-    environment: dev
     env:
       TF_WORKING_DIR: terraform/environments/dev/cloud-run
       TF_IN_AUTOMATION: true
@@ -92,7 +91,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: detect-changes
     if: needs.detect-changes.outputs.stage_cloud_run == 'true'
-    environment: stage
     env:
       TF_WORKING_DIR: terraform/environments/stage/cloud-run
       TF_IN_AUTOMATION: true
@@ -145,7 +143,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: detect-changes
     if: needs.detect-changes.outputs.prod_cloud_run == 'true'
-    environment: prod
     env:
       TF_WORKING_DIR: terraform/environments/prod/cloud-run
       TF_IN_AUTOMATION: true
