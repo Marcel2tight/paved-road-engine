@@ -1,0 +1,53 @@
+name: Deploy Dev Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'terraform/environments/dev/**'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy-dev-cloud-run:
+    name: Deploy Dev Cloud Run
+    runs-on: ubuntu-latest
+
+    environment: dev   # ✅ NOW this is allowed (deployment only)
+
+    concurrency:
+      group: dev-cloud-run
+      cancel-in-progress: false
+
+    env:
+      TF_WORKING_DIR: terraform/environments/dev/cloud-run
+      TF_IN_AUTOMATION: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud via OIDC
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/915035381641/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform init
+        run: terraform -chdir=${TF_WORKING_DIR} init
+
+      - name: Terraform apply
+        run: terraform -chdir=${TF_WORKING_DIR} apply -auto-approve
+
+      - name: Verify Cloud Run deployment
+        run: |
+          gcloud run services list \
+            --platform=managed \
+            --region=us-central1 \
+            --project=imposing-fx-413205
