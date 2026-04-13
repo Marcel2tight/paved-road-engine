@@ -30,7 +30,7 @@ module "cloud_run_app" {
   allow_unauthenticated = var.allow_unauthenticated
   env_vars              = var.env_vars
   labels                = var.labels
-}# Trigger PR validation workflow
+} # Trigger PR validation workflow
 # Trigger PR validation workflow
 # Trigger dev deployment
 # Test Slack notifications
