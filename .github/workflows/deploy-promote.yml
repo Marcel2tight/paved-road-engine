@@ -1,0 +1,75 @@
+name: Promote Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - stage
+          - prod
+      component:
+        description: "Infrastructure component"
+        required: true
+        type: choice
+        options:
+          - cloud-run
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  promote-cloud-run:
+    name: Promote Cloud Run
+    runs-on: ubuntu-latest
+
+    environment: ${{ inputs.target_environment }}
+
+    concurrency:
+      group: promote-${{ inputs.target_environment }}-${{ inputs.component }}
+      cancel-in-progress: false
+
+    env:
+      TF_WORKING_DIR: terraform/environments/${{ inputs.target_environment }}/${{ inputs.component }}
+      TF_IN_AUTOMATION: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud via OIDC
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/915035381641/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform init
+        run: terraform -chdir=${TF_WORKING_DIR} init
+
+      - name: Terraform validate
+        run: terraform -chdir=${TF_WORKING_DIR} validate
+
+      - name: Terraform plan
+        run: terraform -chdir=${TF_WORKING_DIR} plan -out=tfplan
+
+      - name: Upload Terraform plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.target_environment }}-${{ inputs.component }}-tfplan
+          path: ${{ env.TF_WORKING_DIR }}/tfplan
+
+      - name: Terraform apply
+        run: terraform -chdir=${TF_WORKING_DIR} apply -auto-approve tfplan
+
+      - name: Verify Cloud Run deployment
+        run: |
+          gcloud run services list \
+            --platform=managed \
+            --region=us-central1 \
+            --project=imposing-fx-413205
