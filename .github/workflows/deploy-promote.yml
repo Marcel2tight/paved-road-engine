@@ -56,7 +56,7 @@ jobs:
         run: terraform -chdir=${TF_WORKING_DIR} validate
 
       - name: Terraform plan
-        run: terraform -chdir=${TF_WORKING_DIR} plan -out=tfplan
+        run: terraform -chdir=${TF_WORKING_DIR} plan -lock=false -out=tfplan
 
       - name: Upload Terraform plan artifact
         uses: actions/upload-artifact@v4
