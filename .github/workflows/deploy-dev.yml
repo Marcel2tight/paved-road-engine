@@ -25,20 +25,43 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Authenticate to Google Cloud via OIDC
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: projects/915035381641/locations/global/workloadIdentityPools/github-pool/providers/github-provider
           service_account: paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com
+
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
+
       - name: Terraform init
         run: terraform -chdir=${TF_WORKING_DIR} init
+
       - name: Terraform apply
         run: terraform -chdir=${TF_WORKING_DIR} apply -auto-approve
+
       - name: Verify Cloud Run deployment
         run: |
           gcloud run services list \
             --platform=managed \
             --region=us-central1 \
             --project=imposing-fx-413205
+
+      - name: Notify Slack (Dev Deploy Success)
+        if: success()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"🚀 *Dev Deployment Successful*\nService: Cloud Run\nEnvironment: dev\nCommit: \`${{ github.sha }}\`\nTriggered by: ${{ github.actor }}\"
+          }" \
+          ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify Slack (Dev Deploy Failure)
+        if: failure()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"🔥 *Dev Deployment Failed*\nEnvironment: dev\nCommit: \`${{ github.sha }}\`\nActor: ${{ github.actor }}\nCheck logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+          }" \
+          ${{ secrets.SLACK_WEBHOOK_URL }}

@@ -86,6 +86,24 @@ jobs:
           name: dev-cloud-run-tfplan
           path: ${{ env.TF_WORKING_DIR }}/tfplan
 
+      - name: Notify Slack (PR Validation Success)
+        if: success()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"✅ *PR Validation Passed*\nRepo: ${{ github.repository }}\nBranch: ${{ github.head_ref }}\nCommit: \`${{ github.sha }}\`\nEnvironment: dev\"
+          }" \
+          ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify Slack (PR Validation Failure)
+        if: failure()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"❌ *PR Validation Failed*\nRepo: ${{ github.repository }}\nBranch: ${{ github.head_ref }}\nCommit: \`${{ github.sha }}\`\nEnvironment: dev\nCheck logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+          }" \
+          ${{ secrets.SLACK_WEBHOOK_URL }}
+
   validate-stage-cloud-run:
     name: Validate Stage Cloud Run
     runs-on: ubuntu-latest
@@ -138,6 +156,24 @@ jobs:
           name: stage-cloud-run-tfplan
           path: ${{ env.TF_WORKING_DIR }}/tfplan
 
+      - name: Notify Slack (PR Validation Success)
+        if: success()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"✅ *PR Validation Passed*\nRepo: ${{ github.repository }}\nBranch: ${{ github.head_ref }}\nCommit: \`${{ github.sha }}\`\nEnvironment: stage\"
+          }" \
+          ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify Slack (PR Validation Failure)
+        if: failure()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"❌ *PR Validation Failed*\nRepo: ${{ github.repository }}\nBranch: ${{ github.head_ref }}\nCommit: \`${{ github.sha }}\`\nEnvironment: stage\nCheck logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+          }" \
+          ${{ secrets.SLACK_WEBHOOK_URL }}
+
   validate-prod-cloud-run:
     name: Validate Prod Cloud Run
     runs-on: ubuntu-latest
@@ -189,3 +225,21 @@ jobs:
         with:
           name: prod-cloud-run-tfplan
           path: ${{ env.TF_WORKING_DIR }}/tfplan
+
+      - name: Notify Slack (PR Validation Success)
+        if: success()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"✅ *PR Validation Passed*\nRepo: ${{ github.repository }}\nBranch: ${{ github.head_ref }}\nCommit: \`${{ github.sha }}\`\nEnvironment: prod\"
+          }" \
+          ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify Slack (PR Validation Failure)
+        if: failure()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"❌ *PR Validation Failed*\nRepo: ${{ github.repository }}\nBranch: ${{ github.head_ref }}\nCommit: \`${{ github.sha }}\`\nEnvironment: prod\nCheck logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+          }" \
+          ${{ secrets.SLACK_WEBHOOK_URL }}

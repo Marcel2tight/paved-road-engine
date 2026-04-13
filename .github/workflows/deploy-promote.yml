@@ -73,3 +73,21 @@ jobs:
             --platform=managed \
             --region=us-central1 \
             --project=imposing-fx-413205
+
+      - name: Notify Slack (Promotion Success)
+        if: success()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"🚀 *Promotion Successful*\nEnvironment: ${{ inputs.target_environment }}\nComponent: ${{ inputs.component }}\nCommit: \`${{ github.sha }}\`\nTriggered by: ${{ github.actor }}\"
+          }" \
+          ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify Slack (Promotion Failure)
+        if: failure()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"🔥 *Promotion Failed*\nEnvironment: ${{ inputs.target_environment }}\nComponent: ${{ inputs.component }}\nCommit: \`${{ github.sha }}\`\nActor: ${{ github.actor }}\nCheck logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+          }" \
+          ${{ secrets.SLACK_WEBHOOK_URL }}
