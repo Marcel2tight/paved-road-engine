@@ -67,7 +67,18 @@ variable "env_vars" {
 }
 
 variable "labels" {
-  description = "Labels to apply to the service"
+  description = "Resource labels"
   type        = map(string)
-  default     = {}
+
+  validation {
+    condition = (
+      contains(keys(var.labels), "environment") &&
+      contains(keys(var.labels), "managed_by") &&
+      contains(keys(var.labels), "platform") &&
+      contains(keys(var.labels), "owner") &&
+      contains(keys(var.labels), "cost_center")
+    )
+
+    error_message = "Required labels missing."
+  }
 }

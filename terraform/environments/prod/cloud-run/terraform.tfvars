@@ -24,4 +24,5 @@ labels = {
   security    = "hardened"
   service     = "paved-road-engine"
   owner       = "platform-team"
+  cost_center = "engineering"
 }
