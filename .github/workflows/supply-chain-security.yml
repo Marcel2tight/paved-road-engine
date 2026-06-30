@@ -1,0 +1,69 @@
+name: Supply Chain Security
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: imposing-fx-413205
+  REGION: us-central1
+  REPOSITORY: paved-road-containers
+  IMAGE_NAME: slo-fail-test
+  IMAGE_URI: us-central1-docker.pkg.dev/imposing-fx-413205/paved-road-containers/slo-fail-test:${{ github.sha }}
+
+jobs:
+  keyless-signing:
+    name: Build, SBOM, and Keyless Sign
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud using OIDC
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/915035381641/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com
+
+      - name: Setup Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Build and push image to Artifact Registry
+        run: |
+          gcloud builds submit testing/failure-injection/slo-fail-test \
+            --tag "$IMAGE_URI" \
+            --project "$PROJECT_ID"
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate SBOM
+        run: |
+          syft "$IMAGE_URI" -o spdx-json > sbom.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: slo-fail-test-sbom
+          path: sbom.json
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Keyless sign image with GitHub OIDC
+        run: |
+          cosign sign --yes "$IMAGE_URI"
+
+      - name: Verify keyless signature
+        run: |
+          cosign verify "$IMAGE_URI" \
+            --certificate-identity-regexp "https://github.com/Marcel2tight/paved-road-engine/.github/workflows/supply-chain-security.yml@refs/heads/.*" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
