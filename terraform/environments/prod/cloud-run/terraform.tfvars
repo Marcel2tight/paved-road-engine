@@ -4,7 +4,7 @@ service_name = "paved-road-prod-app"
 
 # Temporary bootstrap image.
 # Replace after paved-road-platform:v1.0.0 is built and published.
-image = "us-central1-docker.pkg.dev/paved-road-prod-413205/paved-road-containers/paved-road-platform:v1.0.0"
+image = "us-docker.pkg.dev/cloudrun/container/hello"
 
 service_account_email = "paved-road-runtime@paved-road-prod-413205.iam.gserviceaccount.com"
 
@@ -21,6 +21,9 @@ allow_unauthenticated = false
 env_vars = {
   ENVIRONMENT = "prod"
   PLATFORM    = "paved-road-platform"
+  SERVICE_NAME = "paved-road-prod-app"
+  APP_VERSION  = "v1.0.0"
+  COMMIT_SHA   = "initial-reference-release"
 }
 
 labels = {
