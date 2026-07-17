@@ -77,11 +77,21 @@ jobs:
           echo "=== Diagnostic: Active Resources in State ==="
           terraform -chdir="${TF_WORKING_DIR}" state list
 
-          echo "=== Diagnostic: Target Service Mapping ==="
-          terraform -chdir="${TF_WORKING_DIR}" state show module.cloud_run_app.google_cloud_run_v2_service.this || echo "Resource not found in state"
+      - name: Show Terraform state resource
+        shell: bash
+        run: |
+          terraform -chdir="${TF_WORKING_DIR}" state show \
+            module.cloud_run_app.google_cloud_run_v2_service.this
 
       - name: Terraform validate
         run: terraform -chdir="${TF_WORKING_DIR}" validate
+
+      - name: Verify container image exists
+        shell: bash
+        run: |
+          gcloud artifacts docker images describe \
+            "${{ vars.IMAGE_URI }}" \
+            --project="${{ vars.GCP_PROJECT_ID }}"
 
       - name: Terraform plan
         run: terraform -chdir="${TF_WORKING_DIR}" plan -out=tfplan
