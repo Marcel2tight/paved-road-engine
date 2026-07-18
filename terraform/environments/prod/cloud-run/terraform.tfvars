@@ -2,9 +2,9 @@ project_id   = "paved-road-prod-413205"
 region       = "us-central1"
 service_name = "paved-road-prod-app"
 
-image = "us-docker.pkg.dev/cloudrun/container/hello"
+image = "us-central1-docker.pkg.dev/paved-road-prod-413205/paved-road-containers/paved-road-platform:v1.0.0"
 
-service_account_email = "us-central1-docker.pkg.dev/paved-road-prod-413205/paved-road-containers/paved-road-platform:v1.0.0"
+service_account_email = "paved-road-runtime@paved-road-prod-413205.iam.gserviceaccount.com"
 
 container_port     = 8080
 min_instance_count = 0
