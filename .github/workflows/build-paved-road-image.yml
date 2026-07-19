@@ -1,0 +1,239 @@
+name: Build and Sign Paved Road Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Semantic release tag, for example v1.0.1
+        required: true
+        default: v1.0.1
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: imposing-fx-413205
+  REGION: us-central1
+  REPOSITORY: paved-road-containers
+  IMAGE_NAME: paved-road-platform
+  RELEASE_TAG: ${{ inputs.release_tag }}
+  IMAGE_REPOSITORY: us-central1-docker.pkg.dev/imposing-fx-413205/paved-road-containers/paved-road-platform
+
+jobs:
+  build-sign-attest:
+    name: Test, Build, Sign, and Attest
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 45
+
+    concurrency:
+      group: paved-road-image-${{ inputs.release_tag }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must use semantic version format such as v1.0.1."
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install application dependencies
+        run: |
+          python -m pip install \
+            --disable-pip-version-check \
+            --no-cache-dir \
+            -r app/requirements.txt
+
+          python -m pip check
+
+      - name: Run application tests
+        run: |
+          python -m unittest \
+            discover \
+            -s app \
+            -p "test_*.py" \
+            -v
+
+      - name: Authenticate to Google Cloud using OIDC
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/915035381641/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com
+          project_id: imposing-fx-413205
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: imposing-fx-413205
+
+      - name: Configure Artifact Registry authentication
+        run: |
+          gcloud auth configure-docker \
+            us-central1-docker.pkg.dev \
+            --quiet
+
+      - name: Ensure release tag does not already exist
+        env:
+          IMAGE_TAG_URI: ${{ env.IMAGE_REPOSITORY }}:${{ env.RELEASE_TAG }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+
+          DESCRIBE_OUTPUT="$(
+            gcloud artifacts docker images describe \
+              "${IMAGE_TAG_URI}" \
+              --project="${PROJECT_ID}" \
+              2>&1
+          )"
+          DESCRIBE_STATUS=$?
+
+          set -e
+
+          if [ "${DESCRIBE_STATUS}" -eq 0 ]; then
+            echo "Release tag ${RELEASE_TAG} already exists and will not be overwritten."
+            exit 1
+          fi
+
+          if ! grep -q "Image not found" <<< "${DESCRIBE_OUTPUT}"; then
+            echo "${DESCRIBE_OUTPUT}"
+            exit "${DESCRIBE_STATUS}"
+          fi
+
+          echo "Release tag ${RELEASE_TAG} is available."
+
+      - name: Build and push application image
+        env:
+          IMAGE_TAG_URI: ${{ env.IMAGE_REPOSITORY }}:${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+
+          gcloud builds submit app \
+            --tag "${IMAGE_TAG_URI}" \
+            --project="${PROJECT_ID}" \
+            --quiet
+
+      - name: Resolve immutable image digest
+        id: image
+        env:
+          IMAGE_TAG_URI: ${{ env.IMAGE_REPOSITORY }}:${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+
+          IMAGE_DIGEST="$(
+            gcloud artifacts docker images describe \
+              "${IMAGE_TAG_URI}" \
+              --project="${PROJECT_ID}" \
+              --format="value(image_summary.digest)"
+          )"
+
+          if [[ ! "${IMAGE_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Unable to resolve a valid image digest."
+            exit 1
+          fi
+
+          IMAGE_DIGEST_URI="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+
+          echo "digest=${IMAGE_DIGEST}" >> "${GITHUB_OUTPUT}"
+          echo "digest_uri=${IMAGE_DIGEST_URI}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate SPDX SBOM
+        env:
+          IMAGE_DIGEST_URI: ${{ steps.image.outputs.digest_uri }}
+        run: |
+          set -euo pipefail
+
+          syft "${IMAGE_DIGEST_URI}" \
+            -o spdx-json=sbom.spdx.json
+
+      - name: Scan immutable image for vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.digest_uri }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: "os,library"
+          severity: "CRITICAL,HIGH"
+
+      - name: Upload human-readable SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: paved-road-platform-${{ inputs.release_tag }}-sbom
+          path: sbom.spdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Keylessly sign immutable image
+        env:
+          IMAGE_DIGEST_URI: ${{ steps.image.outputs.digest_uri }}
+        run: |
+          cosign sign \
+            --yes \
+            "${IMAGE_DIGEST_URI}"
+
+      - name: Attach SPDX SBOM attestation
+        env:
+          IMAGE_DIGEST_URI: ${{ steps.image.outputs.digest_uri }}
+        run: |
+          cosign attest \
+            --yes \
+            --predicate sbom.spdx.json \
+            --type spdxjson \
+            "${IMAGE_DIGEST_URI}"
+
+      - name: Verify signature and SBOM attestation
+        env:
+          IMAGE_DIGEST_URI: ${{ steps.image.outputs.digest_uri }}
+          CERTIFICATE_IDENTITY: https://github.com/Marcel2tight/paved-road-platform/.github/workflows/build-paved-road-image.yml@refs/heads/main
+        run: |
+          set -euo pipefail
+
+          cosign verify \
+            "${IMAGE_DIGEST_URI}" \
+            --certificate-identity "${CERTIFICATE_IDENTITY}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+
+          cosign verify-attestation \
+            "${IMAGE_DIGEST_URI}" \
+            --type spdxjson \
+            --certificate-identity "${CERTIFICATE_IDENTITY}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+
+      - name: Publish build summary
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          IMAGE_DIGEST_URI: ${{ steps.image.outputs.digest_uri }}
+        run: |
+          {
+            echo "## Paved Road image release"
+            echo
+            echo "- Tag: ${RELEASE_TAG}"
+            echo "- Digest: ${IMAGE_DIGEST}"
+            echo "- Immutable image: ${IMAGE_DIGEST_URI}"
+            echo "- Tests: passed"
+            echo "- Signature: verified"
+            echo "- SPDX SBOM attestation: verified"
+          } >> "${GITHUB_STEP_SUMMARY}"
