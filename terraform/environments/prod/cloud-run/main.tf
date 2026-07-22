@@ -14,6 +14,12 @@ provider "google" {
   region  = var.region
 }
 
+resource "google_project_iam_member" "deployer_logging_viewer" {
+  project = var.project_id
+  role    = "roles/logging.viewer"
+  member  = "serviceAccount:paved-road-deployer@${var.project_id}.iam.gserviceaccount.com"
+}
+
 module "cloud_run_app" {
   source = "../../../modules/cloud-run"
 
