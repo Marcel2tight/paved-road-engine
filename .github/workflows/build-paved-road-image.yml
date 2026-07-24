@@ -4,169 +4,177 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Semantic release tag, for example v1.0.1
+        description: "Semantic release tag, for example v1.0.1"
         required: true
-        default: v1.0.1
+        default: "v1.0.1"
         type: string
 
 permissions:
   contents: read
   id-token: write
 
-env:
-  PROJECT_ID: imposing-fx-413205
-  REGION: us-central1
-  REPOSITORY: paved-road-containers
-  IMAGE_NAME: paved-road-platform
-  RELEASE_TAG: ${{ inputs.release_tag }}
-  IMAGE_REPOSITORY: us-central1-docker.pkg.dev/imposing-fx-413205/paved-road-containers/paved-road-platform
+concurrency:
+  group: paved-road-image-${{ inputs.release_tag }}
+  cancel-in-progress: false
 
 jobs:
   build-sign-attest:
     name: Test, Build, Sign, and Attest
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: dev
     timeout-minutes: 45
 
-    concurrency:
-      group: paved-road-image-${{ inputs.release_tag }}
-      cancel-in-progress: false
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
+      REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+      IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+      IMAGE_REPOSITORY: >-
+        ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.IMAGE_REPOSITORY }}/${{ vars.IMAGE_NAME }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      RELEASE_METADATA_TYPE: https://paved-road-platform.dev/attestations/release-metadata/v1
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout immutable source revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
-      - name: Validate release tag
+      - name: Validate trusted release request
         shell: bash
         run: |
           set -euo pipefail
-
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error::Release builds must run from refs/heads/main."
+            exit 1
+          fi
+          if [[ ! "${GITHUB_SHA}" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "::error::Invalid Git commit SHA."
+            exit 1
+          fi
           if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Release tag must use semantic version format such as v1.0.1."
+            echo "::error::Release tag must use vMAJOR.MINOR.PATCH."
             exit 1
           fi
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@82c7e631bb3cdc910f68e0081d67478d79c6982d # v5.4.0
         with:
           python-version: "3.11"
 
-      - name: Install application dependencies
+      - name: Install and test application
+        shell: bash
         run: |
-          python -m pip install \
-            --disable-pip-version-check \
-            --no-cache-dir \
-            -r app/requirements.txt
-
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir -r app/requirements.txt
           python -m pip check
-
-      - name: Run application tests
-        run: |
-          python -m unittest \
-            discover \
-            -s app \
-            -p "test_*.py" \
-            -v
+          python -m unittest discover -s app -p "test_*.py" -v
 
       - name: Authenticate to Google Cloud using OIDC
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@6fc4af4b145ae7821d527454aa9bd537d1f2dc5f # v2.1.7
         with:
-          workload_identity_provider: projects/915035381641/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-          service_account: paved-road-sa@imposing-fx-413205.iam.gserviceaccount.com
-          project_id: imposing-fx-413205
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.BUILD_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
           create_credentials_file: true
           export_environment_variables: true
 
       - name: Set up Google Cloud CLI
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@6189d56e4096ee891640bb02ac264be376592d6a # v2.1.2
         with:
-          project_id: imposing-fx-413205
+          project_id: ${{ vars.GCP_PROJECT_ID }}
 
       - name: Configure Artifact Registry authentication
-        run: |
-          gcloud auth configure-docker \
-            us-central1-docker.pkg.dev \
-            --quiet
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
-      - name: Ensure release tag does not already exist
-        env:
-          IMAGE_TAG_URI: ${{ env.IMAGE_REPOSITORY }}:${{ env.RELEASE_TAG }}
+      - name: Require immutable repository tags
         shell: bash
         run: |
           set -euo pipefail
-          set +e
-
-          DESCRIBE_OUTPUT="$(
-            gcloud artifacts docker images describe \
-              "${IMAGE_TAG_URI}" \
-              --project="${PROJECT_ID}" \
-              2>&1
+          IMMUTABLE="$(
+            gcloud artifacts repositories describe "${REPOSITORY}" \
+              --project="${PROJECT_ID}" --location="${REGION}" \
+              --format='value(dockerConfig.immutableTags)'
           )"
-          DESCRIBE_STATUS=$?
-
-          set -e
-
-          if [ "${DESCRIBE_STATUS}" -eq 0 ]; then
-            echo "Release tag ${RELEASE_TAG} already exists and will not be overwritten."
+          if [ "${IMMUTABLE}" != "True" ] && [ "${IMMUTABLE}" != "true" ]; then
+            echo "::error::Artifact Registry immutable tags must be enabled."
             exit 1
           fi
 
-          if ! grep -q "Image not found" <<< "${DESCRIBE_OUTPUT}"; then
-            echo "${DESCRIBE_OUTPUT}"
-            exit "${DESCRIBE_STATUS}"
-          fi
-
-          echo "Release tag ${RELEASE_TAG} is available."
-
-      - name: Build and push application image
+      - name: Ensure release tag does not exist
+        shell: bash
         env:
           IMAGE_TAG_URI: ${{ env.IMAGE_REPOSITORY }}:${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
+          if gcloud artifacts docker images describe "${IMAGE_TAG_URI}" \
+            --project="${PROJECT_ID}" >/dev/null 2>&1; then
+            echo "::error::Release tag ${RELEASE_TAG} already exists."
+            exit 1
+          fi
 
+      - name: Build and push application image
+        id: build
+        shell: bash
+        env:
+          IMAGE_TAG_URI: ${{ env.IMAGE_REPOSITORY }}:${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          BUILD_OUTPUT="${RUNNER_TEMP}/cloud-build.json"
           gcloud builds submit app \
             --tag "${IMAGE_TAG_URI}" \
             --project="${PROJECT_ID}" \
-            --quiet
+            --quiet \
+            --format=json > "${BUILD_OUTPUT}"
+          BUILD_ID="$(jq -er '.id' "${BUILD_OUTPUT}")"
+          echo "build_id=${BUILD_ID}" >> "${GITHUB_OUTPUT}"
 
-      - name: Resolve immutable image digest
+      - name: Resolve immutable digest and independent build source
         id: image
+        shell: bash
         env:
           IMAGE_TAG_URI: ${{ env.IMAGE_REPOSITORY }}:${{ env.RELEASE_TAG }}
+          BUILD_ID: ${{ steps.build.outputs.build_id }}
         run: |
           set -euo pipefail
-
-          IMAGE_DIGEST="$(
-            gcloud artifacts docker images describe \
-              "${IMAGE_TAG_URI}" \
+          DIGEST="$(
+            gcloud artifacts docker images describe "${IMAGE_TAG_URI}" \
               --project="${PROJECT_ID}" \
-              --format="value(image_summary.digest)"
+              --format='value(image_summary.digest)'
           )"
-
-          if [[ ! "${IMAGE_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-            echo "Unable to resolve a valid image digest."
+          if [[ ! "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::Unable to resolve an immutable image digest."
             exit 1
           fi
-
-          IMAGE_DIGEST_URI="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
-
-          echo "digest=${IMAGE_DIGEST}" >> "${GITHUB_OUTPUT}"
-          echo "digest_uri=${IMAGE_DIGEST_URI}" >> "${GITHUB_OUTPUT}"
+          SOURCE_URI="$(
+            gcloud builds describe "${BUILD_ID}" \
+              --project="${PROJECT_ID}" --format=json |
+              jq -er '.source.storageSource
+                | "gs://" + .bucket + "/" + .object'
+          )"
+          case "${SOURCE_URI}" in
+            "gs://${PROJECT_ID}_cloudbuild/source/"*) ;;
+            *)
+              echo "::error::Unexpected Cloud Build source URI."
+              exit 1
+              ;;
+          esac
+          {
+            echo "digest=${DIGEST}"
+            echo "digest_uri=${IMAGE_REPOSITORY}@${DIGEST}"
+            echo "source_uri=${SOURCE_URI}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@v0
+        uses: anchore/sbom-action/download-syft@f8bdd1d8ac5e901a77a92f111440fdb1b593736b # v0.20.6
 
       - name: Generate SPDX SBOM
-        env:
-          IMAGE_DIGEST_URI: ${{ steps.image.outputs.digest_uri }}
-        run: |
-          set -euo pipefail
+        run: syft "${{ steps.image.outputs.digest_uri }}" -o spdx-json=sbom.spdx.json
 
-          syft "${IMAGE_DIGEST_URI}" \
-            -o spdx-json=sbom.spdx.json
-
-      - name: Scan immutable image for vulnerabilities
-        uses: aquasecurity/trivy-action@v0.36.0
+      - name: Scan immutable image
+        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # v0.28.0
         with:
           image-ref: ${{ steps.image.outputs.digest_uri }}
           format: table
@@ -175,8 +183,8 @@ jobs:
           vuln-type: "os,library"
           severity: "CRITICAL,HIGH"
 
-      - name: Upload human-readable SBOM artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload human-readable SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: paved-road-platform-${{ inputs.release_tag }}-sbom
           path: sbom.spdx.json
@@ -184,62 +192,69 @@ jobs:
           retention-days: 30
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3.8.2
 
-      - name: Keylessly sign immutable image
-        env:
-          IMAGE_DIGEST_URI: ${{ steps.image.outputs.digest_uri }}
-        run: |
-          cosign sign \
-            --yes \
-            "${IMAGE_DIGEST_URI}"
-
-      - name: Attach SPDX SBOM attestation
-        env:
-          IMAGE_DIGEST_URI: ${{ steps.image.outputs.digest_uri }}
-        run: |
-          cosign attest \
-            --yes \
-            --predicate sbom.spdx.json \
-            --type spdxjson \
-            "${IMAGE_DIGEST_URI}"
-
-      - name: Verify signature and SBOM attestation
-        env:
-          IMAGE_DIGEST_URI: ${{ steps.image.outputs.digest_uri }}
-          CERTIFICATE_IDENTITY: https://github.com/Marcel2tight/paved-road-platform/.github/workflows/build-paved-road-image.yml@refs/heads/main
-        run: |
-          set -euo pipefail
-
-          timeout 5m cosign verify \
-            "${IMAGE_DIGEST_URI}" \
-            --certificate-identity "${CERTIFICATE_IDENTITY}" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            >/dev/null
-
-          echo "Keyless signature verification passed."
-
-          timeout 5m cosign verify-attestation \
-            "${IMAGE_DIGEST_URI}" \
-            --type spdxjson \
-            --certificate-identity "${CERTIFICATE_IDENTITY}" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            >/dev/null
-
-          echo "SPDX SBOM attestation verification passed."
-
-      - name: Publish build summary
+      - name: Create independently bound release metadata
+        shell: bash
         env:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          CLOUD_BUILD_SOURCE_URI: ${{ steps.image.outputs.source_uri }}
+          CLOUD_BUILD_ID: ${{ steps.build.outputs.build_id }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg git_ref "${GITHUB_REF}" \
+            --arg git_commit "${GITHUB_SHA}" \
+            --arg release_tag "${RELEASE_TAG}" \
+            --arg image_digest "${IMAGE_DIGEST}" \
+            --arg source_uri "${CLOUD_BUILD_SOURCE_URI}" \
+            --arg build_id "${CLOUD_BUILD_ID}" \
+            '{
+              repository: $repository,
+              git_ref: $git_ref,
+              git_commit: $git_commit,
+              release_tag: $release_tag,
+              image_digest: $image_digest,
+              cloud_build_source_uri: $source_uri,
+              cloud_build_id: $build_id
+            }' > release-metadata.json
+
+      - name: Sign image and attach attestations
+        shell: bash
+        env:
           IMAGE_DIGEST_URI: ${{ steps.image.outputs.digest_uri }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${IMAGE_DIGEST_URI}"
+          cosign attest --yes --predicate sbom.spdx.json --type spdxjson "${IMAGE_DIGEST_URI}"
+          cosign attest --yes --predicate release-metadata.json \
+            --type "${RELEASE_METADATA_TYPE}" "${IMAGE_DIGEST_URI}"
+
+      - name: Verify all build claims
+        shell: bash
+        env:
+          IMAGE_DIGEST_URI: ${{ steps.image.outputs.digest_uri }}
+          CERTIFICATE_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/build-paved-road-image.yml@refs/heads/main
+        run: |
+          set -euo pipefail
+          COMMON_ARGS=(
+            --certificate-identity "${CERTIFICATE_IDENTITY}"
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+          )
+          timeout 5m cosign verify "${IMAGE_DIGEST_URI}" "${COMMON_ARGS[@]}" >/dev/null
+          timeout 5m cosign verify-attestation "${IMAGE_DIGEST_URI}" \
+            --type spdxjson "${COMMON_ARGS[@]}" >/dev/null
+          timeout 5m cosign verify-attestation "${IMAGE_DIGEST_URI}" \
+            --type "${RELEASE_METADATA_TYPE}" "${COMMON_ARGS[@]}" >/dev/null
+
+      - name: Publish release summary
+        shell: bash
         run: |
           {
             echo "## Paved Road image release"
-            echo
             echo "- Tag: ${RELEASE_TAG}"
-            echo "- Digest: ${IMAGE_DIGEST}"
-            echo "- Immutable image: ${IMAGE_DIGEST_URI}"
-            echo "- Tests: passed"
-            echo "- Signature: verified"
-            echo "- SPDX SBOM attestation: verified"
+            echo "- Commit: ${GITHUB_SHA}"
+            echo "- Immutable image: ${{ steps.image.outputs.digest_uri }}"
+            echo "- Signature, SPDX SBOM, and release metadata: verified"
           } >> "${GITHUB_STEP_SUMMARY}"

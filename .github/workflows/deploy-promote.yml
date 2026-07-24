@@ -24,21 +24,69 @@ on:
 
 permissions:
   contents: read
-  id-token: write
+
+concurrency:
+  group: promote-${{ inputs.target_environment }}-${{ inputs.component }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_METADATA_TYPE: https://paved-road-platform.dev/attestations/release-metadata/v1
 
 jobs:
+  trust-gate:
+    name: Verify trusted dispatch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the protected main branch
+        shell: bash
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ "${DISPATCH_REF}" != "refs/heads/main" ]; then
+            echo "::error::Promotion must be dispatched from refs/heads/main; received ${DISPATCH_REF}."
+            exit 1
+          fi
+
+          if [[ ! "${DISPATCH_SHA}" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "::error::The triggering commit SHA is invalid."
+            exit 1
+          fi
+
+          echo "Trusted dispatch accepted for ${DISPATCH_SHA}."
+
+  approval-gate:
+    name: "Approve (${{ inputs.target_environment }})"
+    needs: trust-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    environment: ${{ inputs.target_environment == 'prod' && 'prod-approval' || 'stage-approval' }}
+    steps:
+      - name: Record pre-mutation approval
+        run: |
+          echo "Promotion of ${{ inputs.release_tag }} to ${{ inputs.target_environment }} approved."
+
   promotion-plan:
     name: "Plan (${{ inputs.target_environment }})"
+    needs:
+      - trust-gate
+      - approval-gate
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
 
     outputs:
       expected_digest_uri: ${{ steps.image.outputs.target_digest_uri }}
+      execution_context_sha256: ${{ steps.context.outputs.sha256 }}
+      terraform_plan_sha256: ${{ steps.plan-hash.outputs.sha256 }}
 
     environment: ${{ format('{0}-plan', inputs.target_environment) }}
-
-    concurrency:
-      group: promote-plan-${{ inputs.target_environment }}-${{ inputs.component }}
-      cancel-in-progress: false
 
     env:
       TF_WORKING_DIR: ${{ vars.TF_ROOT }}
@@ -47,10 +95,13 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Authenticate to Google Cloud via OIDC
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@6fc4af4b145ae7821d527454aa9bd537d1f2dc5f # v2.1.7
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.DEPLOYER_SERVICE_ACCOUNT }}
@@ -58,12 +109,14 @@ jobs:
           export_environment_variables: true
 
       - name: Set up Google Cloud CLI
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@6189d56e4096ee891640bb02ac264be376592d6a # v2.1.2
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
 
       - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_wrapper: false
 
       - name: Terraform init
         run: terraform -chdir="${TF_WORKING_DIR}" init -reconfigure
@@ -73,24 +126,16 @@ jobs:
         run: |
           terraform -chdir="${TF_WORKING_DIR}" workspace select default
 
-      - name: Verify Terraform backend state
+      - name: Verify Terraform workspace
         shell: bash
         run: |
           set -euo pipefail
-          echo "=== Diagnostic: Core Context ==="
-          echo "Terraform working directory: ${TF_WORKING_DIR}"
-          
-          echo "=== Diagnostic: Selected Workspace ==="
-          terraform -chdir="${TF_WORKING_DIR}" workspace show
-
-          echo "=== Diagnostic: Active Resources in State ==="
-          terraform -chdir="${TF_WORKING_DIR}" state list
-
-      - name: Show Terraform state resource
-        shell: bash
-        run: |
-          terraform -chdir="${TF_WORKING_DIR}" state show \
-            module.cloud_run_app.google_cloud_run_v2_service.this
+          WORKSPACE="$(terraform -chdir="${TF_WORKING_DIR}" workspace show)"
+          if [ "${WORKSPACE}" != "default" ]; then
+            echo "::error::Expected Terraform workspace default; received ${WORKSPACE}."
+            exit 1
+          fi
+          echo "Terraform workspace verified without exposing state contents."
 
       - name: Terraform validate
         run: terraform -chdir="${TF_WORKING_DIR}" validate
@@ -103,10 +148,39 @@ jobs:
             --quiet
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3.8.2
 
       - name: Install SLSA verifier
-        uses: slsa-framework/slsa-verifier/actions/installer@v2.7.1
+        uses: slsa-framework/slsa-verifier/actions/installer@ea584f4502babc6f60d9bc799dbbb13c1caa9ee6 # v2.7.1
+
+      - name: Bind plan execution context
+        id: context
+        shell: bash
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          COMPONENT: ${{ inputs.component }}
+          TF_ROOT: ${{ vars.TF_ROOT }}
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          WIF_PROVIDER: ${{ vars.WIF_PROVIDER }}
+          DEPLOYER_SERVICE_ACCOUNT: ${{ vars.DEPLOYER_SERVICE_ACCOUNT }}
+          CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+        run: |
+          set -euo pipefail
+
+          CONTEXT="$(
+            printf '%s\n' \
+              "${TARGET_ENVIRONMENT}" \
+              "${COMPONENT}" \
+              "${TF_ROOT}" \
+              "${GCP_PROJECT_ID}" \
+              "${GCP_REGION}" \
+              "${WIF_PROVIDER}" \
+              "${DEPLOYER_SERVICE_ACCOUNT}" \
+              "${CLOUD_RUN_SERVICE}"
+          )"
+          CONTEXT_SHA256="$(printf '%s' "${CONTEXT}" | sha256sum | awk '{print $1}')"
+          echo "sha256=${CONTEXT_SHA256}" >> "${GITHUB_OUTPUT}"
 
       - name: Resolve promotion references
         id: image
@@ -115,7 +189,9 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
           SOURCE_PROJECT_ID: ${{ vars.SOURCE_PROJECT_ID }}
           BUILD_SOURCE_PROJECT_ID: ${{ vars.BUILD_SOURCE_PROJECT_ID }}
+          STAGE_PROJECT_ID: ${{ vars.STAGE_PROJECT_ID }}
           TARGET_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
           REGION: ${{ vars.GCP_REGION }}
           REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
           IMAGE_NAME: ${{ vars.IMAGE_NAME }}
@@ -123,37 +199,64 @@ jobs:
           set -euo pipefail
 
           if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Release tag must use semantic version format such as v1.0.1."
+            echo "::error::Release tag must use semantic version format such as v1.0.1."
             exit 1
           fi
 
-          TFVARS_FILE="${TF_WORKING_DIR}/terraform.tfvars"
-
           CONFIGURED_IMAGE="$(
-            awk -F'"' \
-              '/^[[:space:]]*image[[:space:]]*=/{print $2}' \
-              "${TFVARS_FILE}"
+            printf 'var.image\n' |
+              terraform -chdir="${TF_WORKING_DIR}" console |
+              jq -er .
           )"
 
           CONFIGURED_VERSION="$(
-            awk -F'"' \
-              '/^[[:space:]]*APP_VERSION[[:space:]]*=/{print $2}' \
-              "${TFVARS_FILE}"
+            printf 'var.env_vars["APP_VERSION"]\n' |
+              terraform -chdir="${TF_WORKING_DIR}" console |
+              jq -er .
           )"
 
           if [ "${CONFIGURED_VERSION}" != "${RELEASE_TAG}" ]; then
-            echo "Release tag ${RELEASE_TAG} does not match APP_VERSION ${CONFIGURED_VERSION}."
+            echo "::error::Release tag ${RELEASE_TAG} does not match APP_VERSION ${CONFIGURED_VERSION}."
             exit 1
           fi
 
           TARGET_REPOSITORY="${REGION}-docker.pkg.dev/${TARGET_PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}"
+          EXPECTED_PREFIX="${TARGET_REPOSITORY}@"
 
-          if [[ ! "${CONFIGURED_IMAGE}" =~ ^${TARGET_REPOSITORY}@sha256:[a-f0-9]{64}$ ]]; then
-            echo "Stage Terraform must reference an immutable image in ${TARGET_REPOSITORY}."
+          if [[ "${CONFIGURED_IMAGE}" != "${EXPECTED_PREFIX}"* ]]; then
+            echo "::error::Target Terraform must reference an image in ${TARGET_REPOSITORY}."
             exit 1
           fi
 
-          IMAGE_DIGEST="${CONFIGURED_IMAGE##*@}"
+          IMAGE_DIGEST="${CONFIGURED_IMAGE#"${EXPECTED_PREFIX}"}"
+
+          if [[ ! "${IMAGE_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::Target Terraform must reference an immutable sha256 digest."
+            exit 1
+          fi
+
+          case "${TARGET_ENVIRONMENT}" in
+            stage)
+              if [ "${SOURCE_PROJECT_ID}" != "${BUILD_SOURCE_PROJECT_ID}" ]; then
+                echo "::error::Stage must source its artifact from the original build project."
+                exit 1
+              fi
+              ;;
+            prod)
+              if [ -z "${STAGE_PROJECT_ID}" ] || [ "${SOURCE_PROJECT_ID}" != "${STAGE_PROJECT_ID}" ]; then
+                echo "::error::Production must source its artifact from the configured Stage project."
+                exit 1
+              fi
+              if [ "${SOURCE_PROJECT_ID}" = "${BUILD_SOURCE_PROJECT_ID}" ]; then
+                echo "::error::Production cannot bypass Stage by sourcing directly from the build project."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Unsupported target environment ${TARGET_ENVIRONMENT}."
+              exit 1
+              ;;
+          esac
           SOURCE_DIGEST_URI="${REGION}-docker.pkg.dev/${SOURCE_PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}@${IMAGE_DIGEST}"
           BUILD_DIGEST_URI="${REGION}-docker.pkg.dev/${BUILD_SOURCE_PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}@${IMAGE_DIGEST}"
           TARGET_TAG_URI="${TARGET_REPOSITORY}:${RELEASE_TAG}"
@@ -167,15 +270,19 @@ jobs:
             echo "target_digest_uri=${TARGET_DIGEST_URI}"
           } >> "${GITHUB_OUTPUT}"
 
-      - name: Verify Cloud Build source provenance
+      - name: Verify signed release metadata and Cloud Build provenance
         shell: bash
         env:
           BUILD_DIGEST_URI: ${{ steps.image.outputs.build_digest_uri }}
           BUILD_SOURCE_PROJECT_ID: ${{ vars.BUILD_SOURCE_PROJECT_ID }}
+          EXPECTED_DIGEST: ${{ steps.image.outputs.digest }}
+          EXPECTED_RELEASE_TAG: ${{ inputs.release_tag }}
+          TRUSTED_BUILD_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/build-paved-road-image.yml@refs/heads/main
         run: |
           set -euo pipefail
 
           PROVENANCE_FILE="${RUNNER_TEMP}/source-provenance.json"
+          ATTESTATION_FILE="${RUNNER_TEMP}/verified-release-metadata.json"
 
           gcloud artifacts docker images describe \
             "${BUILD_DIGEST_URI}" \
@@ -184,99 +291,50 @@ jobs:
             --format=json \
             > "${PROVENANCE_FILE}"
 
-          SOURCE_URI="$(
-            python - \
-              "${PROVENANCE_FILE}" \
-              "${BUILD_SOURCE_PROJECT_ID}" <<'PY'
-          import base64
-          import json
-          import sys
+          timeout 5m cosign verify-attestation \
+            "${BUILD_DIGEST_URI}" \
+            --type "${RELEASE_METADATA_TYPE}" \
+            --certificate-identity "${TRUSTED_BUILD_IDENTITY}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            > "${ATTESTATION_FILE}"
 
-          provenance_file = sys.argv[1]
-          build_source_project = sys.argv[2]
-          expected_prefix = (
-              f"gs://{build_source_project}_cloudbuild/source/"
-          )
-
-          with open(provenance_file, encoding="utf-8") as handle:
-              document = json.load(handle)
-
-          records = (
-              document
-              .get("provenance_summary", {})
-              .get("provenance", [])
-          )
-
-          if not records:
-              raise SystemExit(
-                  "No Cloud Build provenance records were found."
-              )
-
-          slsa_records = []
-          source_uris = set()
-
-          def collect_strings(value):
-              if isinstance(value, dict):
-                  for nested in value.values():
-                      collect_strings(nested)
-              elif isinstance(value, list):
-                  for nested in value:
-                      collect_strings(nested)
-              elif isinstance(value, str):
-                  if value.startswith(expected_prefix):
-                      source_uris.add(value)
-
-          for record in records:
-              build = record.get("build", {})
-              statement_metadata = (
-                  build.get("inTotoSlsaProvenanceV1")
-                  or build.get("intotoStatement")
-                  or {}
-              )
-
-              predicate_type = statement_metadata.get(
-                  "predicateType", ""
-              )
-
-              if predicate_type not in {
-                  "https://slsa.dev/provenance/v1",
-                  "https://slsa.dev/provenance/v0.1",
-              }:
-                  continue
-
-              slsa_records.append(predicate_type)
-
-              payload = record.get("envelope", {}).get("payload")
-              if not payload:
-                  continue
-
-              payload += "=" * (-len(payload) % 4)
-              statement = json.loads(
-                  base64.urlsafe_b64decode(payload).decode("utf-8")
-              )
-              collect_strings(statement)
-
-          if not slsa_records:
-              raise SystemExit(
-                  "No supported SLSA provenance record was found."
-              )
-
-          if len(source_uris) != 1:
-              raise SystemExit(
-                  "Expected exactly one trusted Cloud Build source archive; "
-                  f"found {len(source_uris)}."
-              )
-
-          print(next(iter(source_uris)))
-          PY
+          PREDICATE="$(
+            jq -er '
+              .payload
+              | @base64d
+              | fromjson
+              | .predicate
+            ' "${ATTESTATION_FILE}"
           )"
+          SOURCE_URI="$(jq -er '.cloud_build_source_uri' <<<"${PREDICATE}")"
+          METADATA_REPOSITORY="$(jq -er '.repository' <<<"${PREDICATE}")"
+          METADATA_REF="$(jq -er '.git_ref' <<<"${PREDICATE}")"
+          METADATA_COMMIT="$(jq -er '.git_commit' <<<"${PREDICATE}")"
+          METADATA_TAG="$(jq -er '.release_tag' <<<"${PREDICATE}")"
+          METADATA_DIGEST="$(jq -er '.image_digest' <<<"${PREDICATE}")"
 
-          if [ -z "${SOURCE_URI}" ]; then
-            echo "Cloud Build source URI resolution failed."
-            exit 1
-          fi
-
-          echo "Verifying provenance from trusted source archive: ${SOURCE_URI}"
+          [ "${METADATA_REPOSITORY}" = "${GITHUB_REPOSITORY}" ] || {
+            echo "::error::Release metadata repository mismatch."; exit 1;
+          }
+          [ "${METADATA_REF}" = "refs/heads/main" ] || {
+            echo "::error::Release metadata is not bound to main."; exit 1;
+          }
+          [[ "${METADATA_COMMIT}" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "::error::Release metadata commit is invalid."; exit 1;
+          }
+          [ "${METADATA_TAG}" = "${EXPECTED_RELEASE_TAG}" ] || {
+            echo "::error::Release metadata tag mismatch."; exit 1;
+          }
+          [ "${METADATA_DIGEST}" = "${EXPECTED_DIGEST}" ] || {
+            echo "::error::Release metadata digest mismatch."; exit 1;
+          }
+          case "${SOURCE_URI}" in
+            "gs://${BUILD_SOURCE_PROJECT_ID}_cloudbuild/source/"*) ;;
+            *)
+              echo "::error::Signed source URI is outside the trusted Cloud Build bucket."
+              exit 1
+              ;;
+          esac
 
           timeout 5m slsa-verifier verify-image \
             "${BUILD_DIGEST_URI}" \
@@ -285,9 +343,37 @@ jobs:
             --builder-id \
               "https://cloudbuild.googleapis.com/GoogleHostedWorker"
 
-          echo "Cloud Build source provenance verification passed."
+          echo "Signed release metadata and Cloud Build provenance verification passed."
+
+      - name: Enforce immutable Artifact Registry tags
+        shell: bash
+        env:
+          REGION: ${{ vars.GCP_REGION }}
+          REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+          SOURCE_PROJECT_ID: ${{ vars.SOURCE_PROJECT_ID }}
+          TARGET_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+
+          for PROJECT_ID in "${SOURCE_PROJECT_ID}" "${TARGET_PROJECT_ID}"; do
+            IMMUTABLE_TAGS="$(
+              gcloud artifacts repositories describe "${REPOSITORY}" \
+                --project="${PROJECT_ID}" \
+                --location="${REGION}" \
+                --format=json |
+                jq -r '.dockerConfig.immutableTags // false'
+            )"
+
+            if [ "${IMMUTABLE_TAGS}" != "true" ]; then
+              echo "::error::Artifact Registry immutable tags are not enabled for ${PROJECT_ID}/${REPOSITORY}."
+              exit 1
+            fi
+          done
+
+          echo "Artifact Registry immutable-tag policy verified."
 
       - name: Protect immutable release tag
+        id: tag
         shell: bash
         env:
           EXPECTED_DIGEST: ${{ steps.image.outputs.digest }}
@@ -313,15 +399,17 @@ jobs:
 
           if [ -n "${EXISTING_DIGEST}" ]; then
             echo "Release tag already points to the expected digest; continuing idempotently."
+            echo "copy_required=false" >> "${GITHUB_OUTPUT}"
           else
             echo "Release tag is available for promotion."
+            echo "copy_required=true" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: Verify signed source artifact
         shell: bash
         env:
           SOURCE_DIGEST_URI: ${{ steps.image.outputs.source_digest_uri }}
-          CERTIFICATE_IDENTITY: https://github.com/Marcel2tight/paved-road-platform/.github/workflows/build-paved-road-image.yml@refs/heads/main
+          CERTIFICATE_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/build-paved-road-image.yml@refs/heads/main
         run: |
           set -euo pipefail
 
@@ -338,7 +426,15 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             >/dev/null
 
+          timeout 5m cosign verify-attestation \
+            "${SOURCE_DIGEST_URI}" \
+            --type "${RELEASE_METADATA_TYPE}" \
+            --certificate-identity "${CERTIFICATE_IDENTITY}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            >/dev/null
+
       - name: Copy image and supply-chain artifacts
+        if: steps.tag.outputs.copy_required == 'true'
         shell: bash
         env:
           SOURCE_DIGEST_URI: ${{ steps.image.outputs.source_digest_uri }}
@@ -380,7 +476,7 @@ jobs:
         shell: bash
         env:
           TARGET_DIGEST_URI: ${{ steps.image.outputs.target_digest_uri }}
-          CERTIFICATE_IDENTITY: https://github.com/Marcel2tight/paved-road-platform/.github/workflows/build-paved-road-image.yml@refs/heads/main
+          CERTIFICATE_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/build-paved-road-image.yml@refs/heads/main
         run: |
           set -euo pipefail
 
@@ -397,11 +493,26 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             >/dev/null
 
+          timeout 5m cosign verify-attestation \
+            "${TARGET_DIGEST_URI}" \
+            --type "${RELEASE_METADATA_TYPE}" \
+            --certificate-identity "${CERTIFICATE_IDENTITY}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            >/dev/null
+
       - name: Terraform plan
-        run: terraform -chdir="${TF_WORKING_DIR}" plan -out=tfplan
+        run: terraform -chdir="${TF_WORKING_DIR}" plan -input=false -lock-timeout=5m -out=tfplan
+
+      - name: Hash Terraform plan
+        id: plan-hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLAN_SHA256="$(sha256sum "${TF_WORKING_DIR}/tfplan" | awk '{print $1}')"
+          echo "sha256=${PLAN_SHA256}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload Terraform plan artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ inputs.target_environment }}-${{ inputs.component }}-tfplan
           path: ${{ env.TF_WORKING_DIR }}/tfplan
@@ -411,12 +522,12 @@ jobs:
     name: "Apply (${{ inputs.target_environment }})"
     needs: promotion-plan
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
 
     environment: ${{ inputs.target_environment }}
-
-    concurrency:
-      group: promote-apply-${{ inputs.target_environment }}-${{ inputs.component }}
-      cancel-in-progress: false
 
     env:
       TF_WORKING_DIR: ${{ vars.TF_ROOT }}
@@ -425,10 +536,48 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify plan/apply execution context
+        shell: bash
+        env:
+          EXPECTED_CONTEXT_SHA256: ${{ needs.promotion-plan.outputs.execution_context_sha256 }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          COMPONENT: ${{ inputs.component }}
+          TF_ROOT: ${{ vars.TF_ROOT }}
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          WIF_PROVIDER: ${{ vars.WIF_PROVIDER }}
+          DEPLOYER_SERVICE_ACCOUNT: ${{ vars.DEPLOYER_SERVICE_ACCOUNT }}
+          CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+        run: |
+          set -euo pipefail
+
+          CONTEXT="$(
+            printf '%s\n' \
+              "${TARGET_ENVIRONMENT}" \
+              "${COMPONENT}" \
+              "${TF_ROOT}" \
+              "${GCP_PROJECT_ID}" \
+              "${GCP_REGION}" \
+              "${WIF_PROVIDER}" \
+              "${DEPLOYER_SERVICE_ACCOUNT}" \
+              "${CLOUD_RUN_SERVICE}"
+          )"
+          ACTUAL_CONTEXT_SHA256="$(printf '%s' "${CONTEXT}" | sha256sum | awk '{print $1}')"
+
+          if [ "${ACTUAL_CONTEXT_SHA256}" != "${EXPECTED_CONTEXT_SHA256}" ]; then
+            echo "::error::Plan and apply GitHub environments resolve to different execution contexts."
+            exit 1
+          fi
+
+          echo "Plan/apply execution context is identical."
 
       - name: Authenticate to Google Cloud via OIDC
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@6fc4af4b145ae7821d527454aa9bd537d1f2dc5f # v2.1.7
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.DEPLOYER_SERVICE_ACCOUNT }}
@@ -436,12 +585,14 @@ jobs:
           export_environment_variables: true
 
       - name: Set up Google Cloud CLI
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@6189d56e4096ee891640bb02ac264be376592d6a # v2.1.2
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
 
       - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_wrapper: false
 
       - name: Terraform init
         run: terraform -chdir="${TF_WORKING_DIR}" init -reconfigure
@@ -452,13 +603,26 @@ jobs:
           terraform -chdir="${TF_WORKING_DIR}" workspace select default
 
       - name: Download Terraform plan artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ inputs.target_environment }}-${{ inputs.component }}-tfplan
           path: ${{ env.TF_WORKING_DIR }}
 
+      - name: Verify Terraform plan integrity
+        shell: bash
+        env:
+          EXPECTED_PLAN_SHA256: ${{ needs.promotion-plan.outputs.terraform_plan_sha256 }}
+        run: |
+          set -euo pipefail
+          ACTUAL_PLAN_SHA256="$(sha256sum "${TF_WORKING_DIR}/tfplan" | awk '{print $1}')"
+          if [ "${ACTUAL_PLAN_SHA256}" != "${EXPECTED_PLAN_SHA256}" ]; then
+            echo "::error::Downloaded Terraform plan failed its SHA-256 integrity check."
+            exit 1
+          fi
+          echo "Terraform plan integrity verified."
+
       - name: Terraform apply
-        run: terraform -chdir="${TF_WORKING_DIR}" apply -auto-approve tfplan
+        run: terraform -chdir="${TF_WORKING_DIR}" apply -input=false -auto-approve tfplan
 
       - name: Verify Cloud Run readiness and traffic
         shell: bash
@@ -641,20 +805,68 @@ jobs:
 
           echo "PASS: Authenticated internal /health probe returned HTTP 200."
 
-      - name: Notify Slack (Promotion Success)
-        if: success()
+  notify:
+    name: Notify promotion result
+    if: always()
+    needs:
+      - trust-gate
+      - approval-gate
+      - promotion-plan
+      - promotion-apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Notify Slack
+        shell: bash
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          TRUST_RESULT: ${{ needs.trust-gate.result }}
+          APPROVAL_RESULT: ${{ needs.approval-gate.result }}
+          PLAN_RESULT: ${{ needs.promotion-plan.result }}
+          APPLY_RESULT: ${{ needs.promotion-apply.result }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          COMPONENT: ${{ inputs.component }}
+          COMMIT_SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          curl -X POST -H 'Content-type: application/json' \
-          --data "{
-            \"text\": \"🚀 *Promotion Successful*\n*Environment:* \`${{ inputs.target_environment }}\`\n*Component:* \`${{ inputs.component }}\`\n*Commit:* \`${{ github.sha }}\`\n*Triggered by:* ${{ github.actor }}\"
-          }" \
-          ${{ secrets.SLACK_WEBHOOK_URL }}
+          set -euo pipefail
 
-      - name: Notify Slack (Promotion Failure)
-        if: failure()
-        run: |
-          curl -X POST -H 'Content-type: application/json' \
-          --data "{
-            \"text\": \"🔥 *Promotion Failed*\n*Environment:* \`${{ inputs.target_environment }}\`\n*Component:* \`${{ inputs.component }}\`\n*Commit:* \`${{ github.sha }}\`\n*Actor:* ${{ github.actor }}\n*Logs:* https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
-          }" \
-          ${{ secrets.SLACK_WEBHOOK_URL }}
+          if [ -z "${SLACK_WEBHOOK_URL}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL is not configured; skipping notification."
+            exit 0
+          fi
+
+          if [ "${TRUST_RESULT}" = "success" ] &&
+             [ "${APPROVAL_RESULT}" = "success" ] &&
+             [ "${PLAN_RESULT}" = "success" ] &&
+             [ "${APPLY_RESULT}" = "success" ]; then
+            TITLE="🚀 Promotion Successful"
+          else
+            TITLE="🔥 Promotion Failed"
+          fi
+
+          MESSAGE="$(
+            printf '%s\nEnvironment: %s\nComponent: %s\nCommit: %s\nActor: %s\nTrust: %s | Approval: %s | Plan: %s | Apply: %s\nLogs: %s' \
+              "${TITLE}" \
+              "${TARGET_ENVIRONMENT}" \
+              "${COMPONENT}" \
+              "${COMMIT_SHA}" \
+              "${ACTOR}" \
+              "${TRUST_RESULT}" \
+              "${APPROVAL_RESULT}" \
+              "${PLAN_RESULT}" \
+              "${APPLY_RESULT}" \
+              "${RUN_URL}"
+          )"
+
+          jq -n --arg text "${MESSAGE}" '{text: $text}' |
+            curl \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --retry 3 \
+              --header 'Content-Type: application/json' \
+              --data-binary @- \
+              "${SLACK_WEBHOOK_URL}"

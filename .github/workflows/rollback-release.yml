@@ -1,0 +1,336 @@
+name: Rollback Production Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        default: "prod"
+        options:
+          - prod
+      component:
+        description: "Infrastructure component"
+        required: true
+        type: choice
+        default: "cloud-run"
+        options:
+          - cloud-run
+      restored_digest:
+        description: "Target immutable SHA256 digest to restore (e.g., sha256:abc123...)"
+        required: true
+        type: string
+      rollback_reason:
+        description: "Reason for emergency rollback"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rollback-${{ inputs.target_environment }}-${{ inputs.component }}
+  cancel-in-progress: false
+
+jobs:
+  trust-gate:
+    name: Verify trusted dispatch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require protected main branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error::Rollback must be dispatched from refs/heads/main; received ${GITHUB_REF}."
+            exit 1
+          fi
+          echo "Trusted dispatch accepted for rollback."
+
+  rollback-plan:
+    name: "Plan Rollback (${{ inputs.target_environment }})"
+    needs: trust-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+
+    outputs:
+      restored_digest_uri: ${{ steps.image.outputs.target_digest_uri }}
+      execution_context_sha256: ${{ steps.context.outputs.sha256 }}
+      terraform_plan_sha256: ${{ steps.plan-hash.outputs.sha256 }}
+
+    environment: prod-rollback
+
+    env:
+      TF_WORKING_DIR: ${{ vars.TF_ROOT }}
+      TF_IN_AUTOMATION: true
+      TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Authenticate to Google Cloud via OIDC
+        uses: google-github-actions/auth@6fc4af4b145ae7821d527454aa9bd537d1f2dc5f # v2.1.7
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOYER_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@6189d56e4096ee891640bb02ac264be376592d6a # v2.1.2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_wrapper: false
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3.8.2
+
+      - name: Bind execution context
+        id: context
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTEXT="${{ inputs.target_environment }}:${{ inputs.component }}:${{ inputs.restored_digest }}"
+          CONTEXT_SHA256="$(printf '%s' "${CONTEXT}" | sha256sum | awk '{print $1}')"
+          echo "sha256=${CONTEXT_SHA256}" >> "${GITHUB_OUTPUT}"
+
+      - name: Resolve and verify restored artifact digest
+        id: image
+        shell: bash
+        env:
+          RESTORED_DIGEST: ${{ inputs.restored_digest }}
+          REGION: ${{ vars.GCP_REGION }}
+          TARGET_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+          IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${RESTORED_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::Restored digest must be a valid sha256 digest string."
+            exit 1
+          fi
+
+          TARGET_REPOSITORY="${REGION}-docker.pkg.dev/${TARGET_PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}"
+          TARGET_DIGEST_URI="${TARGET_REPOSITORY}@${RESTORED_DIGEST}"
+
+          gcloud artifacts docker images describe "${TARGET_DIGEST_URI}" \
+            --project="${TARGET_PROJECT_ID}" \
+            --format="value(image_summary.digest)" >/dev/null
+
+          echo "target_digest_uri=${TARGET_DIGEST_URI}" >> "${GITHUB_OUTPUT}"
+          echo "Validated restored image exists in target Artifact Registry."
+
+      - name: Verify signed restored artifact
+        shell: bash
+        env:
+          TARGET_DIGEST_URI: ${{ steps.image.outputs.target_digest_uri }}
+          CERTIFICATE_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/build-paved-road-image.yml@refs/heads/main
+        run: |
+          set -euo pipefail
+
+          timeout 5m cosign verify \
+            "${TARGET_DIGEST_URI}" \
+            --certificate-identity "${CERTIFICATE_IDENTITY}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            >/dev/null
+
+          echo "Restored artifact Cosign signature verified."
+
+      - name: Terraform init & plan
+        run: |
+          terraform -chdir="${TF_WORKING_DIR}" init -reconfigure
+          terraform -chdir="${TF_WORKING_DIR}" workspace select default
+          terraform -chdir="${TF_WORKING_DIR}" plan -var="image=${{ steps.image.outputs.target_digest_uri }}" -input=false -lock-timeout=5m -out=tfplan
+
+      - name: Hash Terraform plan
+        id: plan-hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLAN_SHA256="$(sha256sum "${TF_WORKING_DIR}/tfplan" | awk '{print $1}')"
+          echo "sha256=${PLAN_SHA256}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload Terraform plan artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rollback-tfplan
+          path: ${{ env.TF_WORKING_DIR }}/tfplan
+          retention-days: 1
+
+  rollback-apply:
+    name: "Apply Rollback (${{ inputs.target_environment }})"
+    needs: rollback-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+
+    environment: prod-rollback
+
+    env:
+      TF_WORKING_DIR: ${{ vars.TF_ROOT }}
+      TF_IN_AUTOMATION: true
+      TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Authenticate to Google Cloud via OIDC
+        uses: google-github-actions/auth@6fc4af4b145ae7821d527454aa9bd537d1f2dc5f # v2.1.7
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOYER_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@6189d56e4096ee891640bb02ac264be376592d6a # v2.1.2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_wrapper: false
+
+      - name: Download Terraform plan artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rollback-tfplan
+          path: ${{ env.TF_WORKING_DIR }}
+
+      - name: Verify Terraform plan integrity
+        shell: bash
+        env:
+          EXPECTED_PLAN_SHA256: ${{ needs.rollback-plan.outputs.terraform_plan_sha256 }}
+        run: |
+          set -euo pipefail
+          ACTUAL_PLAN_SHA256="$(sha256sum "${TF_WORKING_DIR}/tfplan" | awk '{print $1}')"
+          if [ "${ACTUAL_PLAN_SHA256}" != "${EXPECTED_PLAN_SHA256}" ]; then
+            echo "::error::Downloaded Terraform plan failed its SHA-256 integrity check."
+            exit 1
+          fi
+          echo "Terraform plan integrity verified."
+
+      - name: Terraform init & apply
+        run: |
+          terraform -chdir="${TF_WORKING_DIR}" init -reconfigure
+          terraform -chdir="${TF_WORKING_DIR}" workspace select default
+          terraform -chdir="${TF_WORKING_DIR}" apply -input=false -auto-approve tfplan
+
+      - name: Verify Cloud Run readiness and traffic
+        shell: bash
+        run: |
+          set -euo pipefail
+          SERVICE="${{ vars.CLOUD_RUN_SERVICE }}"
+          REGION="${{ vars.GCP_REGION }}"
+          PROJECT="${{ vars.GCP_PROJECT_ID }}"
+
+          SERVICE_JSON="$(gcloud run services describe "${SERVICE}" --platform=managed --region="${REGION}" --project="${PROJECT}" --format=json)"
+          LATEST_READY="$(jq -r '.status.latestReadyRevisionName // empty' <<<"${SERVICE_JSON}")"
+          READY_STATUS="$(jq -r '.status.conditions[] | select(.type == "Ready") | .status' <<<"${SERVICE_JSON}")"
+
+          if [ "${READY_STATUS}" != "True" ] || [ -z "${LATEST_READY}" ]; then
+            echo "::error::Cloud Run service is not ready after rollback."
+            exit 1
+          fi
+          echo "PASS: Cloud Run service restored and ready."
+
+      - name: Verify authenticated application health
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT="${{ vars.GCP_PROJECT_ID }}"
+          REGION="${{ vars.GCP_REGION }}"
+          SERVICE="${{ vars.CLOUD_RUN_SERVICE }}"
+          SCHEDULER_JOB="${SERVICE}-health-probe"
+          PROBE_STARTED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          gcloud scheduler jobs run "${SCHEDULER_JOB}" --project="${PROJECT}" --location="${REGION}"
+
+          PROBE_STATUS=""
+          for ATTEMPT in {1..24}; do
+            PROBE_STATUS="$(
+              gcloud logging read \
+                "resource.type=\"cloud_scheduler_job\"
+                 AND resource.labels.job_id=\"${SCHEDULER_JOB}\"
+                 AND jsonPayload.@type=\"type.googleapis.com/google.cloud.scheduler.logging.AttemptFinished\"
+                 AND timestamp>=\"${PROBE_STARTED_AT}\"" \
+                --project="${PROJECT}" \
+                --limit=1 \
+                --order=desc \
+                --format='value(httpRequest.status)'
+            )"
+            if [ -n "${PROBE_STATUS}" ]; then break; fi
+            sleep 5
+          done
+
+          if [ "${PROBE_STATUS}" != "200" ]; then
+            echo "::error::Post-rollback /health probe returned HTTP ${PROBE_STATUS:-not found}; expected 200."
+            exit 1
+          fi
+          echo "PASS: Post-rollback authenticated /health probe returned HTTP 200."
+
+  notify:
+    name: Notify rollback result
+    if: always()
+    needs:
+      - trust-gate
+      - rollback-plan
+      - rollback-apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Notify Slack
+        shell: bash
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          TRUST_RESULT: ${{ needs.trust-gate.result }}
+          PLAN_RESULT: ${{ needs.rollback-plan.result }}
+          APPLY_RESULT: ${{ needs.rollback-apply.result }}
+          RESTORED_DIGEST: ${{ inputs.restored_digest }}
+          REASON: ${{ inputs.rollback_reason }}
+          COMMIT_SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL is not configured; skipping notification."
+            exit 0
+          fi
+
+          if [ "${TRUST_RESULT}" = "success" ] && [ "${PLAN_RESULT}" = "success" ] && [ "${APPLY_RESULT}" = "success" ]; then
+            TITLE="⏪ Production Rollback Successful"
+          else
+            TITLE="🔥 Production Rollback Failed"
+          fi
+
+          MESSAGE="$(printf '%s\nRestored Digest: %s\nReason: %s\nCommit: %s\nActor: %s\nLogs: %s\n⚠️ REMINDER: Update main branch terraform.tfvars image digest to prevent drift.' \
+            "${TITLE}" "${RESTORED_DIGEST}" "${REASON}" "${COMMIT_SHA}" "${ACTOR}" "${RUN_URL}")"
+
+          jq -n --arg text "${MESSAGE}" '{text: $text}' | \
+            curl --fail-with-body --silent --show-error --retry 3 \
+              --header 'Content-Type: application/json' \
+              --data-binary @- \
+              "${SLACK_WEBHOOK_URL}"
